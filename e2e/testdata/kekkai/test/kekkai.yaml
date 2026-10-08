@@ -1,0 +1,16 @@
+name: test
+description: synthetic workflows that exercise every Kami mechanism
+env_file: env
+prompt: prompt.md
+skills: [noop]
+cwd_roots: [__ROOT__/allowed]
+workers:
+  echo:     {provider: fake, command: scripts/workers/echo.sh}
+  sleeper:  {provider: fake, command: scripts/workers/sleeper.sh}
+  inputs:   {provider: fake, command: scripts/workers/inputs.sh}
+  envdump:  {provider: fake, command: scripts/workers/envdump.sh}
+  silent:   {provider: fake, command: scripts/workers/silent.sh}
+  slow:     {provider: fake, command: scripts/workers/slow.sh}
+  claude:   {provider: claude, model: claude-haiku-5-5}
+  codex:    {provider: codex}
+afk_default: {kind: attended}

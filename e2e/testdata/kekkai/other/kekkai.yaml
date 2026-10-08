@@ -1,0 +1,5 @@
+name: other
+description: a second domain for isolation tests
+env_file: env
+workers:
+  envdump: {provider: fake, command: scripts/workers/envdump.sh}

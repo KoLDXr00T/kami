@@ -1,0 +1,2 @@
+# only these reach workers in the test kekkai
+SECRET_TEST=t1
