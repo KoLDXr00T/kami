@@ -672,6 +672,11 @@ func TestSessionLoop(t *testing.T) {
 	e.must("signal", "pub", "msg", "--key", "t1", "--data", `{"text": "again"}`)
 	v = e.waitStatus(id, "done", 15*time.Second)
 	expect(t, "second turn resumed", v.Report, "sess-1")
+
+	// a later run picks up the session the first one went to sleep with
+	next := e.start_("chat-loop", "--input", "thread=t2", "--input", "text=back", "--inputs", `{"kami_sessions": {"think": "fake:sess-1"}}`)
+	v = e.waitRun(next, short, "first answer", func(v runView) bool { return v.State == "listen" })
+	expect(t, "woken run resumes the old session", v.Vars["resumed_from"], "sess-1")
 }
 
 // --- say= milestones ------------------------------------------------------------------

@@ -309,7 +309,13 @@ func (e *Engine) startAgent(r *Run, wk *wake) {
 	// the state (with the full prompt: a chat loop keeps its conversation).
 	session := r.Step.Session
 	if session == "" && resume == "session" {
-		if prov, id, ok := strings.Cut(r.Sessions[r.State], ":"); ok && prov == spec.Provider {
+		last := r.Sessions[r.State]
+		if last == "" { // a run that picks up where an earlier one went to sleep (kami_sessions input)
+			if prev, ok := r.Vars["kami_sessions"].(map[string]any); ok {
+				last, _ = prev[r.State].(string)
+			}
+		}
+		if prov, id, ok := strings.Cut(last, ":"); ok && prov == spec.Provider {
 			session = id
 		}
 	}
