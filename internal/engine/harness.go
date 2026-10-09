@@ -108,12 +108,11 @@ func startProc(spec procSpec, tok string, onExit func(procResult)) (*proc, error
 // says why, then where the full logs are. The logs keep everything.
 func failureBody(res procResult, dir string) string {
 	why := ""
-	// claude -p --output-format json carries its own error in "result"
+	// claude -p --output-format json carries its error, or why it stopped, in "result"
 	var cj struct {
-		IsError bool   `json:"is_error"`
-		Result  string `json:"result"`
+		Result string `json:"result"`
 	}
-	if json.Unmarshal(bytes.TrimSpace(res.Stdout), &cj) == nil && cj.IsError && cj.Result != "" {
+	if json.Unmarshal(bytes.TrimSpace(res.Stdout), &cj) == nil && cj.Result != "" {
 		why = "Claude: " + firstLine(cj.Result)
 	}
 	if why == "" {
