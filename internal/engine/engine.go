@@ -442,6 +442,16 @@ func (e *Engine) outcome(r *Run, out string, vars map[string]any) {
 		return
 	}
 	e.event(r, "step.outcome", map[string]any{"state": r.State, "outcome": out, "next": next})
+	if say := e.def(r).States[r.State].Step.Say; say != nil {
+		tmpl, ok := say[out]
+		if !ok {
+			tmpl, ok = say[""]
+		}
+		if ok {
+			text, _ := kamui.Render(tmpl, r.Vars)
+			e.event(r, "run.say", map[string]any{"state": r.State, "outcome": out, "text": text})
+		}
+	}
 	e.enter(r, next)
 }
 
@@ -653,20 +663,36 @@ func (e *Engine) findContract(id string) (*Contract, error) {
 
 // --- timers ----------------------------------------------------------------------
 
+// setTimer runs f under the lock once the wall clock reaches at. Go timers
+// count monotonic time, which stops while macOS sleeps, so a timer armed for
+// 09:30 the evening before would fire hours late. Each timer therefore waits
+// at most a minute and re-checks the wall clock: after a sleep it fires
+// within a minute of waking.
 func (e *Engine) setTimer(key string, at time.Time, f func()) {
 	e.stopTimer(key)
+	at = at.Round(0) // wall clock only
 	d := time.Until(at)
 	if d < 0 {
 		d = 0
 	}
-	e.timers[key] = time.AfterFunc(d, func() {
+	if d > time.Minute {
+		d = time.Minute
+	}
+	var t *time.Timer
+	t = time.AfterFunc(d, func() {
 		e.mu.Lock()
 		defer e.mu.Unlock()
-		if e.closed {
+		if e.closed || e.timers[key] != t {
+			return // stopped or replaced meanwhile
+		}
+		if time.Now().Round(0).Before(at) {
+			e.setTimer(key, at, f)
 			return
 		}
+		delete(e.timers, key)
 		f()
 	})
+	e.timers[key] = t
 }
 
 func (e *Engine) stopTimer(key string) {

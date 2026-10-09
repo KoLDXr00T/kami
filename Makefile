@@ -2,12 +2,16 @@ VERSION    := $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
 LDFLAGS    := -ldflags "-X kami/internal/engine.Version=$(VERSION)"
 BIN_DIR    := $(HOME)/.local/bin
 SKILLS_DIR := $(HOME)/.claude/skills
-PLIST      := $(HOME)/Library/LaunchAgents/ai.kami.daemon.plist
+AGENTS     := $(HOME)/Library/LaunchAgents
 
-.PHONY: build test race smoke bench vet install install-skills launchd-install launchd-uninstall clean
+.PHONY: build adapters test race smoke bench vet install install-skills launchd-install launchd-uninstall clean
 
 build:
 	go build $(LDFLAGS) -o bin/kami ./cmd/kami
+
+# Kami's Slack surface (contracts as owner DMs, canvases, dm)
+adapters:
+	go build -o bin/kami-slack ./adapters/slack
 
 vet:
 	go vet ./...
@@ -30,10 +34,11 @@ bench:
 
 # Copy then rename: overwriting a binary launchd is executing leaves a
 # half-mapped image and the restart dies.
-install: build install-skills
+install: build adapters install-skills
 	@mkdir -p $(BIN_DIR)
 	cp bin/kami $(BIN_DIR)/kami.tmp && mv -f $(BIN_DIR)/kami.tmp $(BIN_DIR)/kami
-	@echo "installed $(BIN_DIR)/kami"
+	cp bin/kami-slack $(BIN_DIR)/kami-slack.tmp && mv -f $(BIN_DIR)/kami-slack.tmp $(BIN_DIR)/kami-slack
+	@echo "installed $(BIN_DIR)/kami $(BIN_DIR)/kami-slack"
 
 # The repo is the source of truth for the skills; the install is a symlink.
 install-skills:
@@ -44,19 +49,21 @@ install-skills:
 	  echo "linked $(SKILLS_DIR)/$$s -> skills/$$s"; \
 	done
 
-# Runs `kami daemon` at login and restarts it if it dies. launchd does not
-# read your shell profile, so PATH is spelled out (memento, claude, codex).
+# Runs `kami daemon` and `kami-slack serve` at login and restarts them if they
+# die. launchd does not read your shell profile, so PATH is spelled out
+# (memento, claude, codex).
 launchd-install: install
-	@mkdir -p $(HOME)/Library/LaunchAgents $(HOME)/.kami
-	sed -e "s#__HOME__#$(HOME)#g" -e "s#__PATH__#$(BIN_DIR):/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin#g" \
-	  deploy/ai.kami.daemon.plist > $(PLIST)
-	-launchctl bootout gui/$$(id -u) $(PLIST) 2>/dev/null
-	launchctl bootstrap gui/$$(id -u) $(PLIST)
-	@echo "kami daemon loaded; log at $(HOME)/.kami/daemon.log"
+	@mkdir -p $(AGENTS) $(HOME)/.kami
+	@for a in daemon slack; do \
+	  sed -e "s#__HOME__#$(HOME)#g" -e "s#__PATH__#$(BIN_DIR):/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin#g" \
+	    deploy/ai.kami.$$a.plist > $(AGENTS)/ai.kami.$$a.plist; \
+	  launchctl bootout gui/$$(id -u) $(AGENTS)/ai.kami.$$a.plist 2>/dev/null; \
+	  launchctl bootstrap gui/$$(id -u) $(AGENTS)/ai.kami.$$a.plist && echo "loaded ai.kami.$$a"; \
+	done
+	@echo "logs: $(HOME)/.kami/daemon.log, $(HOME)/.kami/kami-slack.log"
 
 launchd-uninstall:
-	-launchctl bootout gui/$$(id -u) $(PLIST)
-	rm -f $(PLIST)
+	-@for a in daemon slack; do launchctl bootout gui/$$(id -u) $(AGENTS)/ai.kami.$$a.plist; rm -f $(AGENTS)/ai.kami.$$a.plist; done
 
 clean:
 	rm -rf bin

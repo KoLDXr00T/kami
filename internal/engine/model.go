@@ -33,12 +33,15 @@ type Run struct {
 	Status      string         `json:"status"`
 	Vars        map[string]any `json:"vars"`
 	Visits      map[string]int `json:"visits"`
-	AFK         *kamui.AFK     `json:"afk_override,omitempty"`
-	Report      string         `json:"report,omitempty"`
-	Outcome     string         `json:"outcome,omitempty"` // terminal state name
-	Step        *StepState     `json:"step,omitempty"`
-	Created     time.Time      `json:"created_at"`
-	Updated     time.Time      `json:"updated_at"`
+	// Sessions remembers each agent state's last provider session
+	// ("provider:id"), so a resume = "session" step continues it on re-entry.
+	Sessions map[string]string `json:"sessions,omitempty"`
+	AFK      *kamui.AFK        `json:"afk_override,omitempty"`
+	Report   string            `json:"report,omitempty"`
+	Outcome  string            `json:"outcome,omitempty"` // terminal state name
+	Step     *StepState        `json:"step,omitempty"`
+	Created  time.Time         `json:"created_at"`
+	Updated  time.Time         `json:"updated_at"`
 }
 
 // StepState is what the current state is doing.

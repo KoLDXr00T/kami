@@ -11,6 +11,7 @@ workers:
   envdump:  {provider: fake, command: scripts/workers/envdump.sh}
   silent:   {provider: fake, command: scripts/workers/silent.sh}
   slow:     {provider: fake, command: scripts/workers/slow.sh}
+  chatter:  {provider: fake, command: scripts/workers/chatter.sh}
   claude:   {provider: claude, model: claude-haiku-5-5}
   codex:    {provider: codex}
 afk_default: {kind: attended}

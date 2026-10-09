@@ -661,13 +661,43 @@ func count2(e *env) int {
 	return int(env.Data[0]["n"])
 }
 
+// --- a chat loop resumes the same session on every re-entry ------------------------------
+
+func TestSessionLoop(t *testing.T) {
+	e := newEnv(t)
+	id := e.start_("chat-loop", "--input", "thread=t1", "--input", "text=hi")
+	v := e.waitRun(id, short, "first answer", func(v runView) bool { return v.State == "listen" })
+	expect(t, "first turn resumes", v.Vars["resumed_from"], "none")
+	expect(t, "session remembered", v.Sessions["think"], "fake:sess-1")
+	e.must("signal", "pub", "msg", "--key", "t1", "--data", `{"text": "again"}`)
+	v = e.waitStatus(id, "done", 15*time.Second)
+	expect(t, "second turn resumed", v.Report, "sess-1")
+}
+
+// --- say= milestones ------------------------------------------------------------------
+
+func TestSay(t *testing.T) {
+	e := newEnv(t)
+	id := e.start_("say")
+	c := e.openContract(id, short)
+	e.must("contract", "resolve", c.ID, "ship", "--field", "note=today")
+	v := e.waitStatus(id, "done", short)
+	var said []string
+	for _, ev := range v.Events {
+		if ev["type"] == "run.say" {
+			said = append(said, fmt.Sprint(ev["data"].(map[string]any)["text"]))
+		}
+	}
+	expect(t, "milestones", strings.Join(said, " | "), "shipping today | worked: ok")
+}
+
 // --- a worker that never reports --------------------------------------------------------------
 
 func TestSilentWorker(t *testing.T) {
 	e := newEnv(t)
 	id := e.start_("silent")
 	c := e.openContract(id, short)
-	if !strings.Contains(c.Title, "ended twice without an outcome") || !strings.Contains(c.Body, "forgot to report") {
+	if !strings.Contains(c.Title, "stopped without finishing") || !strings.Contains(c.Body, "forgot to report") {
 		t.Fatalf("contract = %q / %q", c.Title, c.Body)
 	}
 	e.must("contract", "resolve", c.ID, "stop")

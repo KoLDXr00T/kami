@@ -104,6 +104,49 @@ func startProc(spec procSpec, tok string, onExit func(procResult)) (*proc, error
 	return p, nil
 }
 
+// failureBody is the short body of a "step failed" blocker: the one line that
+// says why, then where the full logs are. The logs keep everything.
+func failureBody(res procResult, dir string) string {
+	why := ""
+	// claude -p --output-format json carries its own error in "result"
+	var cj struct {
+		IsError bool   `json:"is_error"`
+		Result  string `json:"result"`
+	}
+	if json.Unmarshal(bytes.TrimSpace(res.Stdout), &cj) == nil && cj.IsError && cj.Result != "" {
+		why = "Claude: " + firstLine(cj.Result)
+	}
+	if why == "" {
+		if l := lastLine(res.Stderr); l != "" {
+			why = l
+		} else if l := lastLine(res.Stdout); l != "" {
+			why = l
+		} else {
+			why = "no output"
+		}
+	}
+	if len(why) > 300 {
+		why = why[:300] + "…"
+	}
+	return fmt.Sprintf("%s\n\nLogs: %s", why, dir)
+}
+
+func firstLine(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
+
+func lastLine(b []byte) string {
+	s := strings.TrimSpace(string(b))
+	if i := strings.LastIndexByte(s, '\n'); i >= 0 {
+		return strings.TrimSpace(s[i+1:])
+	}
+	return s
+}
+
 func tail(b []byte, n int) string {
 	s := strings.TrimSpace(string(b))
 	if len(s) > n {
@@ -262,14 +305,23 @@ func (e *Engine) startAgent(r *Run, wk *wake) {
 	if resume == "" {
 		resume = w.Resume
 	}
-	sessionResume := wk != nil && wk.resolution != nil && resume == "session" && r.Step.Session != "" &&
-		r.Step.Provider == spec.Provider && spec.Provider != "fake"
+	// resume = "session" continues the state's last session: on a wake from a
+	// contract (with only the answer as the prompt), and on every re-entry of
+	// the state (with the full prompt: a chat loop keeps its conversation).
+	session := r.Step.Session
+	if session == "" && resume == "session" {
+		if prov, id, ok := strings.Cut(r.Sessions[r.State], ":"); ok && prov == spec.Provider {
+			session = id
+		}
+	}
+	wakeResume := wk != nil && wk.resolution != nil && resume == "session" && session != "" && r.Step.Provider == spec.Provider
+	sessionResume := resume == "session" && session != "" && (wakeResume || wk == nil)
 	var latest *Aura
 	if wk != nil {
 		latest = e.latestAura(r.ID, r.State)
 	}
 	prompt := e.buildPrompt(r, st, k, vars, wk, latest, spec.Provider)
-	if sessionResume {
+	if wakeResume {
 		prompt = resumeMessage(wk)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "prompt.md"), []byte(prompt), 0o600); err != nil {
@@ -282,7 +334,10 @@ func (e *Engine) startAgent(r *Run, wk *wake) {
 		"KAMI_TOKEN": tok, "KAMI_STEP_DIR": dir, "KAMI_PROMPT_FILE": filepath.Join(dir, "prompt.md"),
 		"KAMI_KEKKAI_DIR": k.Dir,
 	})
-	args, err := e.providerArgs(spec, k, s, dir, cwd, prompt, sessionResume, r.Step.Session)
+	if sessionResume && spec.Provider == "fake" {
+		env = append(env, "KAMI_RESUME_SESSION="+session) // tests check which session a fake would resume
+	}
+	args, err := e.providerArgs(spec, k, s, dir, cwd, prompt, sessionResume, session)
 	if err != nil {
 		fail(err)
 		return
@@ -432,7 +487,7 @@ func (e *Engine) providerArgs(spec kekkai.Worker, k *kekkai.Kekkai, s *kamui.Ste
 		if err != nil {
 			return nil, err
 		}
-		args := []string{"claude", "-p", prompt, "--output-format", "json", "--setting-sources", "project", "--plugin-dir", plugin}
+		args := []string{binOr(spec.Bin, "claude"), "-p", prompt, "--output-format", "json", "--setting-sources", "project", "--plugin-dir", plugin}
 		if resume {
 			args = append(args, "--resume", session)
 		}
@@ -442,7 +497,9 @@ func (e *Engine) providerArgs(spec kekkai.Worker, k *kekkai.Kekkai, s *kamui.Ste
 			args = append(args, "--dangerously-skip-permissions")
 		}
 		if len(spec.Tools) > 0 {
-			args = append(args, "--allowedTools", strings.Join(append(spec.Tools, "Bash(kami:*)"), ","))
+			// one argument per tool; the flag is variadic, so another flag must follow
+			args = append(args, "--allowedTools")
+			args = append(args, append(append([]string{}, spec.Tools...), "Bash(kami:*)")...)
 		}
 		if spec.Model != "" {
 			args = append(args, "--model", spec.Model)
@@ -457,7 +514,7 @@ func (e *Engine) providerArgs(spec kekkai.Worker, k *kekkai.Kekkai, s *kamui.Ste
 		}
 		return args, nil
 	case "codex":
-		args := []string{"codex", "exec"}
+		args := []string{binOr(spec.Bin, "codex"), "exec"}
 		if resume {
 			args = append(args, "resume")
 		}
@@ -478,6 +535,13 @@ func (e *Engine) providerArgs(spec kekkai.Worker, k *kekkai.Kekkai, s *kamui.Ste
 		return append(args, prompt), nil
 	}
 	return nil, fmt.Errorf("unknown provider %q (want claude, codex or fake)", spec.Provider)
+}
+
+func binOr(bin, def string) string {
+	if bin != "" {
+		return bin
+	}
+	return def
 }
 
 // buildPlugin makes a per-attempt Claude Code plugin carrying the kekkai's
@@ -509,7 +573,7 @@ func buildPlugin(dir string, k *kekkai.Kekkai, s *kamui.Step) (string, error) {
 
 func sessionID(provider string, stdout []byte) string {
 	switch provider {
-	case "claude", "":
+	case "claude", "", "fake": // a fake worker may print {"session_id": ...} like claude does
 		var v struct {
 			SessionID string `json:"session_id"`
 		}
@@ -545,6 +609,10 @@ func (e *Engine) agentExited(runID, tok string, res procResult) {
 	}
 	if sid := sessionID(r.Step.Provider, res.Stdout); sid != "" {
 		r.Step.Session = sid
+		if r.Sessions == nil {
+			r.Sessions = map[string]string{}
+		}
+		r.Sessions[r.State] = r.Step.Provider + ":" + sid
 	}
 	e.event(r, "worker.exited", map[string]any{"state": r.State, "attempt": r.Step.Attempt, "exit": res.Exit,
 		"timed_out": res.TimedOut, "stderr": tail(res.Stderr, 400)})
@@ -575,9 +643,8 @@ func (e *Engine) agentExited(runID, tok string, res procResult) {
 			why, tail(append(res.Stdout, res.Stderr...), 1500))})
 		return
 	}
-	e.block(r, "stuck", fmt.Sprintf("worker for %s ended twice without an outcome", r.State),
-		fmt.Sprintf("Last attempt: %s.\n\nstderr:\n%s\n\nstdout:\n%s\n\nLogs: %s", why, tail(res.Stderr, 1500), tail(res.Stdout, 1500), r.Step.Dir),
-		[]string{"retry", "stop"})
+	e.block(r, "stuck", fmt.Sprintf("%s: the worker stopped without finishing (%s)", r.State, why),
+		failureBody(res, r.Step.Dir), []string{"retry", "stop"})
 }
 
 // --- worker callbacks -----------------------------------------------------------
@@ -799,9 +866,8 @@ func (e *Engine) scriptExited(runID, tok string, res procResult) {
 	r.Step.Token, r.Step.Phase = "", "done"
 	e.event(r, "script.exited", map[string]any{"state": r.State, "exit": res.Exit, "outcome": out, "stderr": tail(res.Stderr, 400)})
 	if _, ok := e.def(r).States[r.State].Outcomes[out]; !ok {
-		e.block(r, "stuck", fmt.Sprintf("script %s returned %q, which has no transition", r.State, out),
-			fmt.Sprintf("exit %d\n\nstderr:\n%s\n\nstdout:\n%s\n\nLogs: %s", res.Exit, tail(res.Stderr, 1500), tail(res.Stdout, 1500), r.Step.Dir),
-			[]string{"retry", "stop"})
+		e.block(r, "stuck", fmt.Sprintf("%s: the script ended with %q (exit %d), which has no next step", r.State, out, res.Exit),
+			failureBody(res, r.Step.Dir), []string{"retry", "stop"})
 		return
 	}
 	e.outcome(r, out, vars)

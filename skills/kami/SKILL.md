@@ -93,6 +93,59 @@ kami events tail -f [--type contract.] [--run <id>]   # NDJSON with --json
 `kami events tail -f --json` is the stream future adapters (jane, phoenix,
 Slack) consume.
 
+## Slack
+
+`kami-slack` (built by `make adapters`) is Kami's Slack surface on niffty's
+Slack app; niffty must be stopped while it serves.
+
+```sh
+kami-slack serve [--kekkai K] [--poll 5s]        # contracts → owner DMs; buttons / thread replies resolve them
+      [--chat-kekkai work] [--chat-workflow chat] # every other owner DM → a chat run
+kami-slack dm "text"                             # DM the owner (stdin when no args); prints {"channel","ts"}
+kami-slack dm --thread <ts> "text"                # reply in a thread of the owner DM
+kami-slack canvas [--key slug] "Title" < doc.md  # private canvas for the owner; prints its URL; same key = same canvas
+```
+
+Script steps use `dm` and `canvas` to reach the user.
+
+A run lives in the Slack thread named by its var `thread_ts` (or the nearest
+ancestor's, via `parent`). Its contracts are posted into that thread with their
+buttons, and the thread gets one line per milestone: `run.say` text,
+`↳ started <workflow>` for a child, `✅ <workflow>: <report>` /
+`❌ <workflow> <status>: <report>` on finish. Thread-less runs: contracts as
+top-level DMs, no milestones. A reply in a run thread answers the single open
+contract there that takes text (an `ask` from a state or worker, `form`, or an option matching the
+reply); none or several → chat.
+
+Owner DMs that are not contract replies are chat, keyed by thread (`thread_ts`,
+or the message's own ts at top level). Each is published as signal
+`slack.message` (key = thread, `data: {text, ts, history}`) to the chat kekkai.
+A chat run waiting on it gets it. If a chat run owns the thread but is busy,
+the message is queued and retried each poll. With no run, a `chat` run starts
+with inputs `thread_ts`, `channel`, `text`, `history` (`owner:` / `bot:` lines),
+`thread_runs` (ids of the runs tied to the thread, comma-separated).
+A chat workflow answers with `kami-slack dm --thread {thread_ts} "…"` and
+waits on `slack.message` keyed by `{thread_ts}` for the next turn. A contract answered from
+Slack shows `note: via slack (kami-slack)`.
+
+### Audit
+
+Every Slack message in and out (contracts, follow-ups, milestones, button taps with value
+and answer, reactions, canvases, chat routing: `signalled` / `queued` /
+`started` with run ids, errors) is one NDJSON line in
+`$KAMI_HOME/adapters/slack-transcript.ndjson`, full text, no tokens.
+
+```sh
+kami-slack log [-f] [--run R] [--contract C] [--thread T] [--json]  # the transcript, filtered; -f follows
+kami-slack threads [--since 24h] [--json]      # threads: root ts, first line, messages, last activity, runs, contracts
+kami-slack thread <ts> [--json]                # one thread live from Slack, oldest first, with its contract/run ids
+```
+
+Then the Kami side: `kami run show <run>` (events, vars, contracts); each step
+attempt's `~/.kami/runs/<run>/<state>.<visit>.<attempt>/` with `prompt.md`,
+`stdout.log`, `stderr.log`; and Claude's session JSONL under
+`$CLAUDE_CONFIG_DIR/projects/`, named by the `session_id` in `stdout.log`.
+
 ## When something is stuck
 
 A run that cannot continue parks on an engine **blocker** contract
