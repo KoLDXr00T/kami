@@ -14,7 +14,13 @@ type conv struct{ kind, peer, channel string }
 
 func runConv(r *Run) conv {
 	s := func(k string) string { v, _ := r.Vars[k].(string); return v }
-	return conv{kind: s("kami_conv"), peer: s("kami_peer"), channel: s("kami_channel")}
+	c := conv{kind: s("kami_conv"), peer: s("kami_peer"), channel: s("kami_channel")}
+	// "cli" is the terminal only, never something a run can claim; a DM or channel
+	// without its id would share one bucket with every other such run
+	if c.kind == "cli" || c.kind == "dm" && c.peer == "" || c.kind == "group" && c.channel == "" {
+		c.kind = ""
+	}
+	return c
 }
 
 // readable is the scopes this conversation may hear; nil means all. The
