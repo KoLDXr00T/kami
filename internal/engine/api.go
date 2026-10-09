@@ -232,6 +232,27 @@ func (e *Engine) Handler() http.Handler {
 	worker := func(w http.ResponseWriter, r *http.Request) (string, string) {
 		return r.Header.Get("X-Kami-Run"), r.Header.Get("X-Kami-Token")
 	}
+	// memory: shared between the owner (no token) and every worker, filtered by
+	// the caller's conversation
+	m.HandleFunc("POST /memory", func(w http.ResponseWriter, r *http.Request) {
+		run, tok := worker(w, r)
+		var req struct{ About, Fact, Scope string }
+		if err := decode(r, &req); err != nil {
+			reply(w, nil, err)
+			return
+		}
+		f, err := e.Remember(run, tok, req.About, req.Fact, req.Scope)
+		reply(w, f, err)
+	})
+	m.HandleFunc("GET /memory", func(w http.ResponseWriter, r *http.Request) {
+		run, tok := worker(w, r)
+		fs, err := e.Recall(run, tok, r.URL.Query().Get("about"), r.URL.Query().Get("q"))
+		reply(w, fs, err)
+	})
+	m.HandleFunc("DELETE /memory/{id}", func(w http.ResponseWriter, r *http.Request) {
+		_, tok := worker(w, r)
+		reply(w, map[string]any{"forgot": r.PathValue("id")}, e.Forget(tok, r.PathValue("id")))
+	})
 	m.HandleFunc("POST /worker/done", func(w http.ResponseWriter, r *http.Request) {
 		run, tok := worker(w, r)
 		var req struct {

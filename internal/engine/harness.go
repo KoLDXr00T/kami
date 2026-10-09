@@ -319,7 +319,7 @@ func (e *Engine) startAgent(r *Run, wk *wake) {
 	if wk != nil {
 		latest = e.latestAura(r.ID, r.State)
 	}
-	prompt := e.buildPrompt(r, st, k, vars, wk, latest, spec.Provider)
+	prompt := e.buildPrompt(r, st, k, vars, wk, latest, spec)
 	if wakeResume {
 		prompt = resumeMessage(wk)
 	}
@@ -381,10 +381,10 @@ func resumeMessage(wk *wake) string {
 		wk.resolution.Title, raw)
 }
 
-func (e *Engine) buildPrompt(r *Run, st *kamui.State, k *kekkai.Kekkai, vars map[string]any, wk *wake, aura *Aura, provider string) string {
+func (e *Engine) buildPrompt(r *Run, st *kamui.State, k *kekkai.Kekkai, vars map[string]any, wk *wake, aura *Aura, spec kekkai.Worker) string {
 	var b strings.Builder
-	if provider == "codex" && k.Prompt != "" {
-		if p, err := os.ReadFile(filepath.Join(k.Dir, k.Prompt)); err == nil {
+	if spec.Provider == "codex" && promptFile(k, spec) != "" {
+		if p, err := os.ReadFile(filepath.Join(k.Dir, promptFile(k, spec))); err == nil {
 			b.Write(p)
 			b.WriteString("\n\n")
 		}
@@ -411,7 +411,7 @@ func (e *Engine) buildPrompt(r *Run, st *kamui.State, k *kekkai.Kekkai, vars map
 	}
 	fmt.Fprintf(&b, "## Finishing\n\nAllowed outcomes: %s\n\nReport with `kami step done --outcome <outcome> [--vars '<json object>']`.\n\n",
 		strings.Join(st.Order, ", "))
-	if provider == "codex" {
+	if spec.Provider == "codex" {
 		var paths []string
 		for _, sk := range skillNames(k, st.Step) {
 			paths = append(paths, filepath.Join(k.Dir, "skills", sk, "SKILL.md"))
@@ -420,7 +420,7 @@ func (e *Engine) buildPrompt(r *Run, st *kamui.State, k *kekkai.Kekkai, vars map
 			fmt.Fprintf(&b, "## Skills\n\nRead these before starting:\n- %s\n\n", strings.Join(paths, "\n- "))
 		}
 	}
-	if provider != "fake" {
+	if spec.Provider != "fake" {
 		// the protocol rides in the prompt too: a worker that cannot call kami cannot finish
 		b.WriteString(protocolBody())
 		b.WriteString("\n")
@@ -469,6 +469,14 @@ func skillNames(k *kekkai.Kekkai, s *kamui.Step) []string {
 	return out
 }
 
+// promptFile is the system prompt file a worker gets: its own, else the kekkai's.
+func promptFile(k *kekkai.Kekkai, spec kekkai.Worker) string {
+	if spec.Prompt != "" {
+		return spec.Prompt
+	}
+	return k.Prompt
+}
+
 // providerArgs builds the worker command line.
 func (e *Engine) providerArgs(spec kekkai.Worker, k *kekkai.Kekkai, s *kamui.Step, dir, cwd, prompt string, resume bool, session string) ([]string, error) {
 	switch spec.Provider {
@@ -495,10 +503,20 @@ func (e *Engine) providerArgs(spec kekkai.Worker, k *kekkai.Kekkai, s *kamui.Ste
 		} else {
 			args = append(args, "--dangerously-skip-permissions")
 		}
-		if len(spec.Tools) > 0 {
+		if len(spec.Available) > 0 {
+			args = append(args, "--tools", strings.Join(spec.Available, ","))
+		}
+		if len(spec.Tools) > 0 || len(spec.Kami) > 0 {
+			kami := []string{"Bash(kami:*)"}
+			if len(spec.Kami) > 0 {
+				kami = nil
+				for _, c := range spec.Kami {
+					kami = append(kami, "Bash(kami "+c+":*)")
+				}
+			}
 			// one argument per tool; the flag is variadic, so another flag must follow
 			args = append(args, "--allowedTools")
-			args = append(args, append(append([]string{}, spec.Tools...), "Bash(kami:*)")...)
+			args = append(args, append(append([]string{}, spec.Tools...), kami...)...)
 		}
 		if spec.Model != "" {
 			args = append(args, "--model", spec.Model)
@@ -506,8 +524,8 @@ func (e *Engine) providerArgs(spec kekkai.Worker, k *kekkai.Kekkai, s *kamui.Ste
 		if spec.Effort != "" {
 			args = append(args, "--effort", spec.Effort)
 		}
-		if k.Prompt != "" {
-			if p, err := os.ReadFile(filepath.Join(k.Dir, k.Prompt)); err == nil {
+		if promptFile(k, spec) != "" {
+			if p, err := os.ReadFile(filepath.Join(k.Dir, promptFile(k, spec))); err == nil {
 				args = append(args, "--append-system-prompt", string(p))
 			}
 		}
@@ -666,6 +684,11 @@ func (e *Engine) StepDone(runID, tok, out string, vars map[string]any) error {
 	r, err := e.workerRun(runID, tok)
 	if err != nil {
 		return err
+	}
+	for k := range vars {
+		if strings.HasPrefix(k, "kami_") { // the conversation a run speaks for: inputs and scripts only
+			return uerr("FORBIDDEN", "var %s: kami_* vars are set by Kami, not by workers", k)
+		}
 	}
 	st := e.def(r).States[r.State]
 	if _, ok := st.Outcomes[out]; !ok {

@@ -115,6 +115,12 @@ const usage = `kami — the Kami agent OS
 
   kami events tail [-f] [--since ID] [--type PREFIX] [--kekkai K] [--run R]
 
+  kami memory save [--about WHO] [--scope public|private|dm:<user>|chan:<channel>] <fact...>
+  kami memory load [--about WHO] [--q TEXT]      facts this conversation may hear (all, for you)
+  kami memory forget <id>                         owner only
+    shared by you and every worker; a worker in a DM or channel only hears public facts and
+    its own conversation's, and what it saves stays in that conversation
+
   worker side (KAMI_RUN and KAMI_TOKEN set by the harness):
   kami step done --outcome O [--vars JSON]
   kami contract request --kind ask|choice|form|blocker --title T [--body B] [--options a,b] [--default a]
@@ -166,6 +172,8 @@ func run(args []string) error {
 		return cmdStepDone(tailArgs(rest))
 	case "state":
 		return cmdState(sub, tailArgs(rest))
+	case "memory":
+		return cmdMemory(sub, tailArgs(rest))
 	}
 	return fail("USAGE", "unknown command %q (kami help)", cmd)
 }
@@ -963,4 +971,61 @@ func cmdState(sub string, args []string) error {
 		return emitValue(out, func() { fmt.Println(pretty(out)) })
 	}
 	return fail("USAGE", "usage: kami state snapshot|show")
+}
+
+// --- memory ---------------------------------------------------------------------------
+
+func cmdMemory(sub string, args []string) error {
+	f, err := parse(args, map[string]bool{"about": true, "scope": true, "q": true}, nil)
+	if err != nil {
+		return err
+	}
+	switch sub {
+	case "save":
+		fact := strings.Join(f.pos, " ")
+		if fact == "" {
+			return fail("USAGE", "usage: kami memory save [--about WHO] [--scope S] <fact...>")
+		}
+		var m map[string]any
+		data, err := call("POST", "/memory", map[string]any{"about": f.get("about"), "fact": fact, "scope": f.get("scope")}, &m)
+		if err != nil {
+			return err
+		}
+		return emit(data, func() { fmt.Printf("remembered %s (%s)\n", m["id"], m["scope"]) })
+	case "load":
+		var ms []map[string]any
+		q := url.Values{}
+		if v := f.get("about"); v != "" {
+			q.Set("about", v)
+		}
+		if v := f.get("q"); v != "" {
+			q.Set("q", v)
+		}
+		data, err := call("GET", "/memory?"+q.Encode(), nil, &ms)
+		if err != nil {
+			return err
+		}
+		return emit(data, func() {
+			if len(ms) == 0 {
+				fmt.Println("nothing remembered")
+			}
+			for _, m := range ms {
+				about := m["about"]
+				if about == "" {
+					about = "-"
+				}
+				fmt.Printf("%s  %s  [%s]  %s\n", m["id"], about, m["scope"], m["fact"])
+			}
+		})
+	case "forget":
+		if len(f.pos) != 1 {
+			return fail("USAGE", "usage: kami memory forget <id>")
+		}
+		data, err := call("DELETE", "/memory/"+url.PathEscape(f.pos[0]), nil, nil)
+		if err != nil {
+			return err
+		}
+		return emit(data, func() { fmt.Println("forgot " + f.pos[0]) })
+	}
+	return fail("USAGE", "usage: kami memory save|load|forget")
 }

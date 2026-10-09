@@ -22,6 +22,14 @@ type Worker struct {
 	Command        string   `yaml:"command" json:"command,omitempty"` // fake provider: script run as the worker
 	Tools          []string `yaml:"tools" json:"tools,omitempty"`
 	PermissionMode string   `yaml:"permission_mode" json:"permission_mode,omitempty"`
+	// Available narrows claude's built-in tools to these (--tools); Tools then
+	// says which of them are allowed. Empty: every built-in tool exists.
+	Available []string `yaml:"available" json:"available,omitempty"`
+	// Kami is the kami subcommands the worker may run ("step done", "memory");
+	// empty: all of them.
+	Kami []string `yaml:"kami" json:"kami,omitempty"`
+	// Prompt replaces the kekkai's prompt file for this worker.
+	Prompt string `yaml:"prompt" json:"prompt,omitempty"`
 }
 
 // Mode is an AFK mode as written in config: kind attended | grace | afk.

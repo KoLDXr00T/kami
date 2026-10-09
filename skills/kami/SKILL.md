@@ -93,6 +93,21 @@ kami events tail -f [--type contract.] [--run <id>]   # NDJSON with --json
 `kami events tail -f --json` is the stream future adapters (jane, phoenix,
 Slack) consume.
 
+## Memory
+
+```sh
+kami memory save --about haithem [--scope public|private|dm:<user>|chan:<channel>] "hates tabs"
+kami memory load [--about haithem] [--q tabs]
+kami memory forget <id>
+```
+
+Shared by the owner (you, from the terminal: you hear everything; saves default to
+`private`) and every worker. A run's conversation comes from its `kami_conv`,
+`kami_peer` and `kami_channel` inputs, which workers can never set: a DM with a
+coworker hears `public` and its own `dm:<user>`, a channel hears `public` and its
+own `chan:<channel>`, and whatever they save stays in that conversation. When the
+user says "remember X about Y", save it about Y; ask before making it `public`.
+
 ## Slack
 
 `kami-slack` (built by `make adapters`) is Kami's Slack surface on niffty's

@@ -785,3 +785,26 @@ func TestSmokeCodexBlockerWake(t *testing.T) {
 }
 
 func Terminal(s string) bool { return engine.Terminal(s) }
+
+// --- memory -----------------------------------------------------------------------------
+
+// The owner hears everything; a DM hears public and its own DM; a channel
+// hears public and its own channel; what a worker saves stays in its
+// conversation whatever scope it asks for; no worker can set kami_* vars.
+func TestMemoryScopes(t *testing.T) {
+	e := newEnv(t)
+	for _, s := range []string{"public", "private", "dm:U1", "dm:U2", "chan:C1"} {
+		e.must("memory", "save", "--about", "haithem", "--scope", s, "fact "+s)
+	}
+	dm := e.waitStatus(e.start_("memory", "--input", "kami_conv=dm", "--input", "kami_peer=U1"), "done", short)
+	expect(t, "dm hears", dm.Report, "[dm:U1] [dm:U1] [public] | promoted=no")
+	group := e.waitStatus(e.start_("memory", "--input", "kami_conv=group", "--input", "kami_channel=C1"), "done", short)
+	expect(t, "channel hears", group.Report, "[chan:C1] [chan:C1] [public] | promoted=no")
+	owner := e.waitStatus(e.start_("memory"), "done", short)
+	expect(t, "owner run hears", owner.Report, "[chan:C1] [chan:C1] [dm:U1] [dm:U1] [dm:U2] [private] [private] [public] | promoted=no")
+	var facts []state.Memory
+	json.Unmarshal(e.must("memory", "load", "--about", "haithem"), &facts)
+	if len(facts) != 5 {
+		t.Fatalf("owner load about haithem: %+v", facts)
+	}
+}
