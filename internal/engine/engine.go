@@ -199,6 +199,11 @@ func (e *Engine) recover(r *Run) {
 			e.reapplyContract(st.Contract)
 			return
 		}
+		if p := st.Pending; p != nil { // it had already reported: finish the step, do not redo it
+			st.Pending, st.Phase, st.Token = nil, "done", ""
+			e.outcome(r, p.Outcome, p.Vars)
+			return
+		}
 		e.startAgent(r, &wake{note: "The daemon restarted while the previous attempt was running. Check what it already did before repeating any action."})
 	case kamui.KScript:
 		e.startScript(r)

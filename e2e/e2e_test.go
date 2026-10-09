@@ -818,3 +818,23 @@ func TestMemoryScopes(t *testing.T) {
 		t.Fatalf("owner load about haithem: %+v", facts)
 	}
 }
+
+// A worker that reported and then died with the daemon is not run again: the
+// reported outcome was saved and recovery applies it.
+func TestCrashAfterReport(t *testing.T) {
+	e := newEnv(t)
+	id := e.start_("linger")
+	e.waitRun(id, short, "reported", func(v runView) bool { return hasEvent(v, "step.reported") })
+	e.crash()
+	e.start()
+	v := e.waitStatus(id, "done", short)
+	n := 0
+	for _, ev := range v.Events {
+		if ev["type"] == "worker.started" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("worker started %d times; report %q", n, v.Report)
+	}
+}

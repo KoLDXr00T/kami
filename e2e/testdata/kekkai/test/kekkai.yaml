@@ -13,6 +13,7 @@ workers:
   slow:     {provider: fake, command: scripts/workers/slow.sh}
   chatter:  {provider: fake, command: scripts/workers/chatter.sh}
   rememberer: {provider: fake, command: scripts/workers/memory.sh}
+  linger:   {provider: fake, command: scripts/workers/linger.sh}
   claude:   {provider: claude, model: claude-haiku-5-5}
   codex:    {provider: codex}
 afk_default: {kind: attended}

@@ -349,7 +349,7 @@ func (e *Engine) startAgent(r *Run, wk *wake) {
 		r.Step.Contract = "" // answered; the resolution travels in the prompt
 	}
 	r.Step.Token, r.Step.Phase, r.Step.Dir, r.Step.Worker, r.Step.Provider = tok, "running", dir, name, spec.Provider
-	r.Step.pending = nil
+	r.Step.Pending = nil
 	r.Status = StRunning
 	runID := r.ID
 	p, err := startProc(procSpec{Args: args, Dir: cwd, Env: env, Timeout: timeout, LogDir: dir}, tok, func(res procResult) {
@@ -634,8 +634,8 @@ func (e *Engine) agentExited(runID, tok string, res procResult) {
 	e.event(r, "worker.exited", map[string]any{"state": r.State, "attempt": r.Step.Attempt, "exit": res.Exit,
 		"timed_out": res.TimedOut, "stderr": tail(res.Stderr, 400)})
 	r.Step.Token = ""
-	if p := r.Step.pending; p != nil {
-		r.Step.pending = nil
+	if p := r.Step.Pending; p != nil {
+		r.Step.Pending = nil
 		r.Step.Phase = "done"
 		e.outcome(r, p.Outcome, p.Vars)
 		return
@@ -694,13 +694,14 @@ func (e *Engine) StepDone(runID, tok, out string, vars map[string]any) error {
 	if _, ok := st.Outcomes[out]; !ok {
 		return uerr("INVALID", "outcome %q is not allowed in state %s; allowed: %s", out, r.State, strings.Join(st.Order, ", "))
 	}
-	if r.Step.pending != nil {
-		return uerr("CONFLICT", "outcome already reported (%s)", r.Step.pending.Outcome)
+	if r.Step.Pending != nil {
+		return uerr("CONFLICT", "outcome already reported (%s)", r.Step.Pending.Outcome)
 	}
 	if c := e.contracts[r.Step.Contract]; c != nil && c.Attempt == r.Step.Attempt && c.Status == "open" {
 		return uerr("CONFLICT", "you raised contract %s this attempt; exit and wait for it instead of finishing", c.ID)
 	}
-	r.Step.pending = &pending{Outcome: out, Vars: vars}
+	r.Step.Pending = &pending{Outcome: out, Vars: vars}
+	e.saveRun(r, "reported "+out) // a restart before the worker exits must not lose it
 	e.event(r, "step.reported", map[string]any{"state": r.State, "outcome": out})
 	e.setTimer("kill:"+runID, now().Add(60*time.Second), func() {
 		if p := e.procs[runID]; p != nil && p.token == tok {
@@ -737,7 +738,7 @@ func (e *Engine) WorkerContract(runID, tok string, req ContractRequest) (*Contra
 	if strings.TrimSpace(req.Title) == "" {
 		return nil, uerr("INVALID", "title is required")
 	}
-	if r.Step.pending != nil {
+	if r.Step.Pending != nil {
 		return nil, uerr("CONFLICT", "outcome already reported; a finished step cannot raise a contract")
 	}
 	if c := e.contracts[r.Step.Contract]; c != nil && c.Attempt == r.Step.Attempt && c.Status == "open" {
