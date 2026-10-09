@@ -793,15 +793,15 @@ func Terminal(s string) bool { return engine.Terminal(s) }
 // conversation whatever scope it asks for; no worker can set kami_* vars.
 func TestMemoryScopes(t *testing.T) {
 	e := newEnv(t)
-	for _, s := range []string{"public", "private", "dm:U1", "dm:U2", "chan:C1"} {
+	for _, s := range []string{"public", "private", "conduct", "dm:U1", "dm:U2", "chan:C1"} {
 		e.must("memory", "save", "--about", "haithem", "--scope", s, "fact "+s)
 	}
 	dm := e.waitStatus(e.start_("memory", "--input", "kami_conv=dm", "--input", "kami_peer=U1"), "done", short)
-	expect(t, "dm hears", dm.Report, "[dm:U1] [dm:U1] [public] | promoted=no")
+	expect(t, "dm hears", dm.Report, "[conduct] [dm:U1] [dm:U1] [public] | promoted=no")
 	group := e.waitStatus(e.start_("memory", "--input", "kami_conv=group", "--input", "kami_channel=C1"), "done", short)
-	expect(t, "channel hears", group.Report, "[chan:C1] [chan:C1] [public] | promoted=no")
+	expect(t, "channel hears", group.Report, "[chan:C1] [chan:C1] [conduct] [public] | promoted=no")
 	owner := e.waitStatus(e.start_("memory", "--input", "kami_conv=owner"), "done", short)
-	expect(t, "owner chat hears", owner.Report, "[private] [private] [public] | promoted=no")
+	expect(t, "owner chat hears", owner.Report, "[conduct] [private] [private] [public] | promoted=no")
 	forged := e.waitStatus(e.start_("memory", "--input", "kami_conv=cli"), "done", short)
 	expect(t, "a run cannot claim the terminal", forged.Report, "none | promoted=no")
 	peerless := e.waitStatus(e.start_("memory", "--input", "kami_conv=dm"), "done", short)
@@ -814,7 +814,7 @@ func TestMemoryScopes(t *testing.T) {
 	expect(t, "signal cannot promote", e.waitStatus(sig, "done", short).Report, "group")
 	var facts []state.Memory
 	json.Unmarshal(e.must("memory", "load", "--about", "haithem"), &facts)
-	if len(facts) != 5 { // the terminal hears every scope
+	if len(facts) != 6 { // the terminal hears every scope
 		t.Fatalf("owner load about haithem: %+v", facts)
 	}
 }

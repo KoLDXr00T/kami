@@ -23,7 +23,9 @@ func runConv(r *Run) conv {
 	return c
 }
 
-// readable is the scopes this conversation may hear; nil means all. The
+// readable is the scopes this conversation may hear; nil means all. conduct
+// is how POWER treats people: every conversation reads it, only the owner at
+// the terminal writes it, and she never repeats it. The
 // owner's chat does not hear what coworkers told POWER (dm:, chan:): that text
 // is theirs, and it must never reach a worker with the owner's tools.
 func (c conv) readable() ([]string, error) {
@@ -31,11 +33,11 @@ func (c conv) readable() ([]string, error) {
 	case "cli":
 		return nil, nil
 	case "owner":
-		return []string{"public", "private"}, nil
+		return []string{"public", "private", "conduct"}, nil
 	case "dm":
-		return []string{"public", "dm:" + c.peer}, nil
+		return []string{"public", "conduct", "dm:" + c.peer}, nil
 	case "group":
-		return []string{"public", "chan:" + c.channel}, nil
+		return []string{"public", "conduct", "chan:" + c.channel}, nil
 	}
 	return nil, uerr("FORBIDDEN", "this run has no memory (only conversations do)")
 }
@@ -54,7 +56,7 @@ func (c conv) writeScope(asked string) (string, error) {
 			return "private", nil
 		}
 		if asked == "public" || asked == "private" ||
-			c.kind == "cli" && (strings.HasPrefix(asked, "dm:") || strings.HasPrefix(asked, "chan:")) {
+			c.kind == "cli" && (asked == "conduct" || strings.HasPrefix(asked, "dm:") || strings.HasPrefix(asked, "chan:")) {
 			return asked, nil
 		}
 		return "", uerr("INVALID", "scope %q: want public or private", asked)

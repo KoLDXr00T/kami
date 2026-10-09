@@ -115,7 +115,7 @@ const usage = `kami — the Kami agent OS
 
   kami events tail [-f] [--since ID] [--type PREFIX] [--kekkai K] [--run R]
 
-  kami memory save [--about WHO] [--scope public|private|dm:<user>|chan:<channel>] <fact...>
+  kami memory save [--about WHO] [--scope public|private|conduct|dm:<user>|chan:<channel>] <fact...>
   kami memory load [--about WHO] [--q TEXT]      facts this conversation may hear (all, for you)
   kami memory forget <id>                         owner only
     shared by you and every worker; a worker in a DM or channel only hears public facts and
