@@ -433,6 +433,12 @@ func (e *Engine) outcome(r *Run, out string, vars map[string]any) {
 		if k == "visits" {
 			continue
 		}
+		// kami_* (the conversation a run speaks for) come from its inputs only: never from a
+		// worker, a signal's data, a script or a contract's answer data
+		if strings.HasPrefix(k, "kami_") {
+			e.event(r, "vars.refused", map[string]any{"state": r.State, "var": k})
+			continue
+		}
 		r.Vars[k] = v
 	}
 	next, err := e.def(r).Next(r.State, out)

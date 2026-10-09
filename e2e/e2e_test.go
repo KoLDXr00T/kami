@@ -800,11 +800,17 @@ func TestMemoryScopes(t *testing.T) {
 	expect(t, "dm hears", dm.Report, "[dm:U1] [dm:U1] [public] | promoted=no")
 	group := e.waitStatus(e.start_("memory", "--input", "kami_conv=group", "--input", "kami_channel=C1"), "done", short)
 	expect(t, "channel hears", group.Report, "[chan:C1] [chan:C1] [public] | promoted=no")
-	owner := e.waitStatus(e.start_("memory"), "done", short)
-	expect(t, "owner run hears", owner.Report, "[chan:C1] [chan:C1] [dm:U1] [dm:U1] [dm:U2] [private] [private] [public] | promoted=no")
+	owner := e.waitStatus(e.start_("memory", "--input", "kami_conv=owner"), "done", short)
+	expect(t, "owner chat hears", owner.Report, "[private] [private] [public] | promoted=no")
+	system := e.waitStatus(e.start_("memory"), "done", short)
+	expect(t, "a run with no conversation has no memory", system.Report, "none | promoted=no")
+	sig := e.start_("memory", "--input", "kami_conv=group", "--input", "kami_channel=SIG")
+	e.waitRun(sig, short, "waiting on promote", func(v runView) bool { return v.State == "listen" })
+	e.must("signal", "pub", "promote", "--data", `{"kami_conv": "owner"}`)
+	expect(t, "signal cannot promote", e.waitStatus(sig, "done", short).Report, "group")
 	var facts []state.Memory
 	json.Unmarshal(e.must("memory", "load", "--about", "haithem"), &facts)
-	if len(facts) != 5 {
+	if len(facts) != 5 { // the terminal hears every scope
 		t.Fatalf("owner load about haithem: %+v", facts)
 	}
 }
