@@ -41,6 +41,8 @@ kami run list --status active                        # running, sleeping, waitin
 kami run show <id>                                   # state, vars, contracts, aura, events
 kami run cancel <id>                                 # cancels children too
 kami run upgrade <id> [--state S] [--vars JSON]      # move a waiting run onto the edited workflow (vars merged in)
+kami kekkai pause <k> [--until 09:00] [--except chat,converse]   # hold its runs (new steps, probes, crons) until resume
+kami kekkai resume <k>
 ```
 
 A run's status: `running` (worker/script executing), `sleeping` (a worker

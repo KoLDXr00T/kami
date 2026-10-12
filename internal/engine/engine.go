@@ -39,6 +39,7 @@ type Engine struct {
 	procs     map[string]*proc // run id -> running worker/script
 	resolvers map[string]*proc // contract id -> running resolver
 	triggers  map[string]time.Time
+	pauses    map[string]*Pause // kekkai -> its pause
 	closed    bool
 }
 
@@ -163,6 +164,7 @@ func (e *Engine) Boot() error {
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	e.loadPauses()
 	ids := make([]string, 0, len(e.runs))
 	for id, r := range e.runs {
 		if !Terminal(r.Status) {
@@ -213,6 +215,8 @@ func (e *Engine) recover(r *Run) {
 		e.checkChildren(r)
 	case "blocked":
 		e.reapplyContract(st.Contract)
+	case "paused":
+		e.enter(r, r.State) // parks again while the kekkai is still paused
 	default:
 		if e.def(r).States[r.State] != nil && e.def(r).States[r.State].Step.IsContract() {
 			e.reapplyContract(st.Contract)
@@ -375,6 +379,10 @@ func (e *Engine) enter(r *Run, name string) {
 	st := w.States[name]
 	if st == nil {
 		e.finish(r, StFailed, fmt.Sprintf("state %q does not exist", name))
+		return
+	}
+	if e.held(r) {
+		e.park(r, name)
 		return
 	}
 	r.Visits[name]++

@@ -69,6 +69,9 @@ func (e *Engine) fireRun(id string) {
 	case st.WakeAt != nil && !t.Before(*st.WakeAt):
 		st.Phase = "done"
 		e.outcome(r, "timer", nil)
+	case st.probeAt != nil && !t.Before(*st.probeAt) && e.held(r):
+		e.probeHeld(r)
+		e.scheduleRun(r)
 	case st.probeAt != nil && !t.Before(*st.probeAt):
 		st.probeAt = nil
 		e.runProbe(r)

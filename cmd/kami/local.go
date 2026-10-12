@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -291,8 +292,53 @@ func cmdKekkai(sub string, args []string) error {
 				fmt.Printf("%s  next %s\n", id, out[id])
 			}
 		})
+	case "pause":
+		f, err := parse(args, map[string]bool{"until": true, "except": true}, nil)
+		if err != nil || len(f.pos) != 1 {
+			return fail("USAGE", "usage: kami kekkai pause <name> [--until HH:MM|RFC3339] [--except wf,wf]")
+		}
+		body := map[string]any{}
+		if u := f.get("until"); u != "" {
+			t, err := untilTime(u, time.Now())
+			if err != nil {
+				return err
+			}
+			body["until"] = t
+		}
+		if x := f.get("except"); x != "" {
+			body["except"] = strings.Split(x, ",")
+		}
+		var p struct {
+			Until  *time.Time `json:"until"`
+			Except []string   `json:"except"`
+		}
+		data, err := call("POST", "/kekkai/"+url.PathEscape(f.pos[0])+"/pause", body, &p)
+		if err != nil {
+			return err
+		}
+		return emit(data, func() {
+			until := "until `kami kekkai resume " + f.pos[0] + "`"
+			if p.Until != nil {
+				until = "until " + p.Until.Local().Format("Mon 15:04")
+			}
+			fmt.Printf("paused %s %s", f.pos[0], until)
+			if len(p.Except) > 0 {
+				fmt.Printf(" (still running: %s)", strings.Join(p.Except, ", "))
+			}
+			fmt.Println()
+		})
+	case "resume":
+		if len(args) != 1 {
+			return fail("USAGE", "usage: kami kekkai resume <name>")
+		}
+		var out struct{ Resumed []string }
+		data, err := call("POST", "/kekkai/"+url.PathEscape(args[0])+"/resume", map[string]any{}, &out)
+		if err != nil {
+			return err
+		}
+		return emit(data, func() { fmt.Printf("resumed %s: %d held runs continue\n", args[0], len(out.Resumed)) })
 	}
-	return fail("USAGE", "usage: kami kekkai list|current|switch|validate|reload")
+	return fail("USAGE", "usage: kami kekkai list|current|switch|validate|reload|pause|resume")
 }
 
 // silentErr exits with a code after output was already printed.
@@ -536,4 +582,20 @@ func dryRun(w *kamui.Workflow) []string {
 		}
 	}
 	return lines
+}
+
+// untilTime reads --until: RFC3339, or HH:MM meaning its next occurrence (tomorrow if passed).
+func untilTime(s string, from time.Time) (time.Time, error) {
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, nil
+	}
+	hm, err := time.ParseInLocation("15:04", s, from.Location())
+	if err != nil {
+		return time.Time{}, fail("USAGE", "--until wants HH:MM or RFC3339, got %q", s)
+	}
+	t := time.Date(from.Year(), from.Month(), from.Day(), hm.Hour(), hm.Minute(), 0, 0, from.Location())
+	if !t.After(from) {
+		t = t.AddDate(0, 0, 1)
+	}
+	return t, nil
 }

@@ -241,6 +241,30 @@ func (e *Engine) Handler() http.Handler {
 		v, err := e.AFKView(r.PathValue("run"))
 		reply(w, v, err)
 	})
+	m.HandleFunc("POST /kekkai/{k}/pause", func(w http.ResponseWriter, r *http.Request) {
+		if err := workerOnly(r); err != nil {
+			reply(w, nil, err)
+			return
+		}
+		var req struct {
+			Until  *time.Time
+			Except []string
+		}
+		if err := decode(r, &req); err != nil {
+			reply(w, nil, err)
+			return
+		}
+		p, err := e.PauseKekkai(r.PathValue("k"), req.Until, req.Except)
+		reply(w, p, err)
+	})
+	m.HandleFunc("POST /kekkai/{k}/resume", func(w http.ResponseWriter, r *http.Request) {
+		if err := workerOnly(r); err != nil {
+			reply(w, nil, err)
+			return
+		}
+		ids, err := e.ResumeKekkai(r.PathValue("k"))
+		reply(w, map[string]any{"resumed": ids}, err)
+	})
 	m.HandleFunc("POST /triggers/reload", func(w http.ResponseWriter, r *http.Request) {
 		reply(w, e.ReloadTriggers(), nil)
 	})
@@ -584,7 +608,7 @@ func (e *Engine) Status() map[string]any {
 		}
 	}
 	return map[string]any{"pid": os.Getpid(), "home": e.Home, "memento_namespace": e.Mem.NS, "runs": by,
-		"open_contracts": open, "running_processes": len(e.procs), "triggers": trig,
+		"open_contracts": open, "running_processes": len(e.procs), "triggers": trig, "paused": e.pauses,
 		"version": fmt.Sprintf("kami %s", Version)}
 }
 

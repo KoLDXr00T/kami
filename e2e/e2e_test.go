@@ -862,3 +862,32 @@ func TestUpgrade(t *testing.T) {
 	}
 	e.refused(5, "already", "run", "upgrade", id)
 }
+
+// --- pause: a paused kekkai parks runs (across a restart) until resume -------------------
+
+func TestPause(t *testing.T) {
+	e := newEnv(t)
+	e.must("kekkai", "pause", "test", "--except", "script-step")
+	id := e.start_("probe-wait")
+	v := e.waitRun(id, short, "parked", func(v runView) bool { return hasEvent(v, "run.paused") })
+	expect(t, "status while paused", v.Status, "waiting")
+	free := e.start_("script-step", "--input", "word=hi")
+	e.waitStatus(free, "done", short) // an excepted workflow keeps going
+	e.crash()
+	e.start()
+	time.Sleep(time.Second)
+	expect(t, "status after restart", e.show(id).Status, "waiting")
+	e.must("kekkai", "resume", "test")
+	expect(t, "report", e.waitStatus(id, "done", short).Report, "3")
+	e.refused(5, "not paused", "kekkai", "resume", "test")
+	e.must("kekkai", "pause", "test", "--until", time.Now().Add(2*time.Second).Format(time.RFC3339))
+	id = e.start_("probe-wait")
+	expect(t, "report after --until", e.waitStatus(id, "done", short).Report, "3")
+
+	id = e.start_("probe-wait") // already waiting when the pause starts: its probes stop
+	e.must("kekkai", "pause", "test")
+	time.Sleep(3 * time.Second)
+	expect(t, "status with probes held", e.show(id).Status, "waiting")
+	e.must("kekkai", "resume", "test")
+	expect(t, "report after resume", e.waitStatus(id, "done", short).Report, "3")
+}
