@@ -104,7 +104,7 @@ const usage = `kami — the Kami agent OS
 
   kami run start <workflow>[:<entry>] [--kekkai K] [--input k=v]... [--inputs JSON] [--afk MODE]
   kami run list [--status S|active] [--kekkai K] [--var k=v]...
-  kami run show <id> | cancel <id>
+  kami run show <id> | cancel <id> | upgrade <id> [--state S]
 
   kami signal pub <type> [--key K] [--data JSON] [--kekkai K]
 
@@ -501,8 +501,22 @@ func cmdRun(sub string, args []string) error {
 			return err
 		}
 		return emit(data, func() { fmt.Printf("cancelled %s\n", r.ID) })
+	case "upgrade":
+		if len(args) < 1 || len(args) > 3 || (len(args) == 3 && args[1] != "--state") || len(args) == 2 {
+			return fail("USAGE", "usage: kami run upgrade <id> [--state S]")
+		}
+		body := map[string]any{}
+		if len(args) == 3 {
+			body["state"] = args[2]
+		}
+		var r engine.Run
+		data, err := call("POST", "/runs/"+url.PathEscape(args[0])+"/upgrade", body, &r)
+		if err != nil {
+			return err
+		}
+		return emit(data, func() { fmt.Printf("upgraded %s → %s\n", r.ID, r.State) })
 	}
-	return fail("USAGE", "usage: kami run start|list|show|cancel")
+	return fail("USAGE", "usage: kami run start|list|show|cancel|upgrade")
 }
 
 func showRun(r *engine.Run, cs []engine.ContractView, auras []engine.Aura, kids []engine.RunBrief, events []map[string]any) {

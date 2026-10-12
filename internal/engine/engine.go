@@ -475,14 +475,7 @@ func (e *Engine) finish(r *Run, status, report string) {
 	if p := e.procs[r.ID]; p != nil {
 		p.kill()
 	}
-	for _, c := range e.contracts {
-		if c.RunID == r.ID && c.Status == "open" {
-			c.Status = "cancelled"
-			e.stopTimer("contract:" + c.ID)
-			e.saveContract(c, "cancelled: run finished")
-			e.event(r, "contract.cancelled", map[string]any{"id": c.ID})
-		}
-	}
+	e.cancelContracts(r, "run finished")
 	r.Status, r.Report, r.Outcome = status, report, r.State
 	if r.Step != nil {
 		r.Step.Phase, r.Step.Token = "done", ""
@@ -494,6 +487,59 @@ func (e *Engine) finish(r *Run, status, report string) {
 			e.checkChildren(p)
 		}
 	}
+}
+
+func (e *Engine) cancelContracts(r *Run, why string) {
+	for _, c := range e.contracts {
+		if c.RunID == r.ID && c.Status == "open" {
+			c.Status = "cancelled"
+			e.stopTimer("contract:" + c.ID)
+			e.saveContract(c, "cancelled: "+why)
+			e.event(r, "contract.cancelled", map[string]any{"id": c.ID})
+		}
+	}
+}
+
+// Upgrade moves a parked run onto its workflow's current definition and enters
+// state (its current one when empty): runs stay pinned to the definition they
+// started with, so a fix to a workflow otherwise only reaches new runs. Its open
+// contracts are withdrawn. A run with a process or children still running is refused.
+func (e *Engine) Upgrade(id, state string) (*Run, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	r, err := e.findRun(id)
+	if err != nil {
+		return nil, err
+	}
+	if Terminal(r.Status) {
+		return nil, uerr("CONFLICT", "run %s is already %s", r.ID, r.Status)
+	}
+	if e.procs[r.ID] != nil || (r.Step != nil && (r.Step.probing || r.Step.Kind == kamui.KSpawn ||
+		(r.Step.Kind == kamui.KAgent && r.Step.Phase != "done"))) {
+		return nil, uerr("CONFLICT", "run %s is busy in %s: upgrade it while it waits", r.ID, r.State)
+	}
+	_, w, err := LoadWorkflow(e.Home, r.Kekkai, r.Workflow)
+	if err != nil {
+		return nil, err
+	}
+	if state == "" {
+		state = r.State
+	}
+	if w.States[state] == nil {
+		return nil, uerr("INVALID", "the current %s has no state %q", r.Workflow, state)
+	}
+	if _, ok := e.defs[w.Hash]; !ok {
+		if err := e.Mem.SaveDef(w.Hash, r.Kekkai, r.Workflow, w.Entry, w.Files); err != nil {
+			return nil, fmt.Errorf("pin workflow: %w", err)
+		}
+		e.defs[w.Hash] = w
+	}
+	e.stopTimer("run:" + r.ID)
+	e.cancelContracts(r, "run upgraded")
+	e.event(r, "run.upgraded", map[string]any{"from": r.DefHash, "to": w.Hash, "state": state})
+	r.DefHash, r.Step, r.Status = w.Hash, nil, StRunning
+	e.enter(r, state)
+	return r, nil
 }
 
 // block parks the run on an engine contract (loop budget, a step that cannot

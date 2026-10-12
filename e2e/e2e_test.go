@@ -843,3 +843,22 @@ func TestCrashAfterReport(t *testing.T) {
 		t.Fatalf("worker started %d times; report %q", n, v.Report)
 	}
 }
+
+// A run parked on an old definition moves onto the edited workflow: its contract is
+// withdrawn and it carries on from the named state of the new definition.
+func TestUpgrade(t *testing.T) {
+	e := newEnv(t)
+	id := e.start_("lock")
+	e.openContract(id, short)
+	e.refused(4, "no state", "run", "upgrade", id, "--state", "fixed")
+	wf := filepath.Join(e.home, "kekkai", "test", "workflows", "lock.star")
+	raw, _ := os.ReadFile(wf)
+	os.WriteFile(wf, bytes.Replace(raw, []byte(`done("merged")`), []byte(`done("upgraded")`), 1), 0o600)
+	e.must("run", "upgrade", id, "--state", "merged")
+	v := e.waitStatus(id, "done", short)
+	expect(t, "report", v.Report, "upgraded")
+	if !hasEvent(v, "run.upgraded") || !hasEvent(v, "contract.cancelled") {
+		t.Fatalf("events: %s", eventTypes(v))
+	}
+	e.refused(5, "already", "run", "upgrade", id)
+}

@@ -145,6 +145,20 @@ func (e *Engine) Handler() http.Handler {
 		reply(w, e.view(run), err)
 	})
 
+	m.HandleFunc("POST /runs/{id}/upgrade", func(w http.ResponseWriter, r *http.Request) {
+		if err := workerOnly(r); err != nil {
+			reply(w, nil, err)
+			return
+		}
+		var req struct{ State string }
+		if err := decode(r, &req); err != nil {
+			reply(w, nil, err)
+			return
+		}
+		run, err := e.Upgrade(r.PathValue("id"), req.State)
+		reply(w, e.view(run), err)
+	})
+
 	m.HandleFunc("POST /signal", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Kekkai, Type, Key string
