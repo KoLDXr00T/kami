@@ -104,7 +104,7 @@ const usage = `kami — the Kami agent OS
 
   kami run start <workflow>[:<entry>] [--kekkai K] [--input k=v]... [--inputs JSON] [--afk MODE]
   kami run list [--status S|active] [--kekkai K] [--var k=v]...
-  kami run show <id> | cancel <id> | upgrade <id> [--state S]
+  kami run show <id> | cancel <id> | upgrade <id> [--state S] [--vars JSON]
 
   kami signal pub <type> [--key K] [--data JSON] [--kekkai K]
 
@@ -502,12 +502,24 @@ func cmdRun(sub string, args []string) error {
 		}
 		return emit(data, func() { fmt.Printf("cancelled %s\n", r.ID) })
 	case "upgrade":
-		if len(args) < 1 || len(args) > 3 || (len(args) == 3 && args[1] != "--state") || len(args) == 2 {
-			return fail("USAGE", "usage: kami run upgrade <id> [--state S]")
+		usage := fail("USAGE", "usage: kami run upgrade <id> [--state S] [--vars JSON]")
+		if len(args) < 1 || len(args)%2 == 0 {
+			return usage
 		}
 		body := map[string]any{}
-		if len(args) == 3 {
-			body["state"] = args[2]
+		for i := 1; i < len(args); i += 2 {
+			switch args[i] {
+			case "--state":
+				body["state"] = args[i+1]
+			case "--vars":
+				var vars map[string]any
+				if err := json.Unmarshal([]byte(args[i+1]), &vars); err != nil {
+					return fail("USAGE", "--vars: %v", err)
+				}
+				body["vars"] = vars
+			default:
+				return usage
+			}
 		}
 		var r engine.Run
 		data, err := call("POST", "/runs/"+url.PathEscape(args[0])+"/upgrade", body, &r)

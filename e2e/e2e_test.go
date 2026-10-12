@@ -853,10 +853,10 @@ func TestUpgrade(t *testing.T) {
 	e.refused(4, "no state", "run", "upgrade", id, "--state", "fixed")
 	wf := filepath.Join(e.home, "kekkai", "test", "workflows", "lock.star")
 	raw, _ := os.ReadFile(wf)
-	os.WriteFile(wf, bytes.Replace(raw, []byte(`done("merged")`), []byte(`done("upgraded")`), 1), 0o600)
-	e.must("run", "upgrade", id, "--state", "merged")
+	os.WriteFile(wf, bytes.Replace(raw, []byte(`done("merged")`), []byte(`done("upgraded: {note}{kami_x}")`), 1), 0o600)
+	e.must("run", "upgrade", id, "--state", "merged", "--vars", `{"note": "make it bigger", "kami_x": "no"}`)
 	v := e.waitStatus(id, "done", short)
-	expect(t, "report", v.Report, "upgraded")
+	expect(t, "report", v.Report, "upgraded: make it bigger")
 	if !hasEvent(v, "run.upgraded") || !hasEvent(v, "contract.cancelled") {
 		t.Fatalf("events: %s", eventTypes(v))
 	}

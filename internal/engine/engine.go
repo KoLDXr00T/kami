@@ -504,7 +504,7 @@ func (e *Engine) cancelContracts(r *Run, why string) {
 // state (its current one when empty): runs stay pinned to the definition they
 // started with, so a fix to a workflow otherwise only reaches new runs. Its open
 // contracts are withdrawn. A run with a process or children still running is refused.
-func (e *Engine) Upgrade(id, state string) (*Run, error) {
+func (e *Engine) Upgrade(id, state string, vars map[string]any) (*Run, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	r, err := e.findRun(id)
@@ -537,6 +537,11 @@ func (e *Engine) Upgrade(id, state string) (*Run, error) {
 	e.stopTimer("run:" + r.ID)
 	e.cancelContracts(r, "run upgraded")
 	e.event(r, "run.upgraded", map[string]any{"from": r.DefHash, "to": w.Hash, "state": state})
+	for k, v := range vars { // kami_* stay what the run's inputs made them, as in outcome
+		if k != "visits" && !strings.HasPrefix(k, "kami_") {
+			r.Vars[k] = v
+		}
+	}
 	r.DefHash, r.Step, r.Status = w.Hash, nil, StRunning
 	e.enter(r, state)
 	return r, nil

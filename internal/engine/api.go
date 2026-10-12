@@ -150,12 +150,15 @@ func (e *Engine) Handler() http.Handler {
 			reply(w, nil, err)
 			return
 		}
-		var req struct{ State string }
+		var req struct {
+			State string
+			Vars  map[string]any
+		}
 		if err := decode(r, &req); err != nil {
 			reply(w, nil, err)
 			return
 		}
-		run, err := e.Upgrade(r.PathValue("id"), req.State)
+		run, err := e.Upgrade(r.PathValue("id"), req.State, normMap(req.Vars))
 		reply(w, e.view(run), err)
 	})
 

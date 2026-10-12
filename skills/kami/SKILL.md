@@ -40,7 +40,7 @@ kami run start <workflow> --afk grace=10m            # AFK for this run
 kami run list --status active                        # running, sleeping, waiting
 kami run show <id>                                   # state, vars, contracts, aura, events
 kami run cancel <id>                                 # cancels children too
-kami run upgrade <id> [--state S]                    # move a waiting run onto the edited workflow
+kami run upgrade <id> [--state S] [--vars JSON]      # move a waiting run onto the edited workflow (vars merged in)
 ```
 
 A run's status: `running` (worker/script executing), `sleeping` (a worker
