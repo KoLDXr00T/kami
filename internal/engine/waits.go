@@ -62,6 +62,11 @@ func (e *Engine) fireRun(id string) {
 	}
 	t := now()
 	st := r.Step
+	if e.held(r) { // nothing fires while paused: resume moves the deadline by the pause
+		e.probeHeld(r)
+		e.scheduleRun(r)
+		return
+	}
 	switch {
 	case st.Deadline != nil && !t.Before(*st.Deadline):
 		st.Phase = "done"
@@ -124,8 +129,8 @@ func (e *Engine) probeExited(id, tok string, res procResult) {
 		t := now().Add(every)
 		r.Step.probeAt = &t
 		if out == "error" {
-			e.block(r, "stuck", fmt.Sprintf("probe in %s failed (exit %d)", r.State, res.Exit),
-				fmt.Sprintf("stderr:\n%s\n\nstdout:\n%s", tail(res.Stderr, 1500), tail(res.Stdout, 1500)), []string{"retry", "stop"})
+			e.block(r, "stuck", fmt.Sprintf("%s: the probe failed (exit %d)", r.State, res.Exit),
+				failureBody(res, filepath.Join(e.runDir(r), r.State+".probe")), []string{"retry", "stop"})
 			return
 		}
 		e.scheduleRun(r)

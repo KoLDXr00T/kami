@@ -661,13 +661,48 @@ func count2(e *env) int {
 	return int(env.Data[0]["n"])
 }
 
+// --- a chat loop resumes the same session on every re-entry ------------------------------
+
+func TestSessionLoop(t *testing.T) {
+	e := newEnv(t)
+	id := e.start_("chat-loop", "--input", "thread=t1", "--input", "text=hi")
+	v := e.waitRun(id, short, "first answer", func(v runView) bool { return v.State == "listen" })
+	expect(t, "first turn resumes", v.Vars["resumed_from"], "none")
+	expect(t, "session remembered", v.Sessions["think"], "fake:sess-1")
+	e.must("signal", "pub", "msg", "--key", "t1", "--data", `{"text": "again"}`)
+	v = e.waitStatus(id, "done", 15*time.Second)
+	expect(t, "second turn resumed", v.Report, "sess-1")
+
+	// a later run picks up the session the first one went to sleep with
+	next := e.start_("chat-loop", "--input", "thread=t2", "--input", "text=back", "--inputs", `{"kami_sessions": {"think": "fake:sess-1"}}`)
+	v = e.waitRun(next, short, "first answer", func(v runView) bool { return v.State == "listen" })
+	expect(t, "woken run resumes the old session", v.Vars["resumed_from"], "sess-1")
+}
+
+// --- say= milestones ------------------------------------------------------------------
+
+func TestSay(t *testing.T) {
+	e := newEnv(t)
+	id := e.start_("say")
+	c := e.openContract(id, short)
+	e.must("contract", "resolve", c.ID, "ship", "--field", "note=today")
+	v := e.waitStatus(id, "done", short)
+	var said []string
+	for _, ev := range v.Events {
+		if ev["type"] == "run.say" {
+			said = append(said, fmt.Sprint(ev["data"].(map[string]any)["text"]))
+		}
+	}
+	expect(t, "milestones", strings.Join(said, " | "), "shipping today | worked: ok")
+}
+
 // --- a worker that never reports --------------------------------------------------------------
 
 func TestSilentWorker(t *testing.T) {
 	e := newEnv(t)
 	id := e.start_("silent")
 	c := e.openContract(id, short)
-	if !strings.Contains(c.Title, "ended twice without an outcome") || !strings.Contains(c.Body, "forgot to report") {
+	if !strings.Contains(c.Title, "stopped without finishing") || !strings.Contains(c.Body, "forgot to report") {
 		t.Fatalf("contract = %q / %q", c.Title, c.Body)
 	}
 	e.must("contract", "resolve", c.ID, "stop")
@@ -755,3 +790,114 @@ func TestSmokeCodexBlockerWake(t *testing.T) {
 }
 
 func Terminal(s string) bool { return engine.Terminal(s) }
+
+// --- memory -----------------------------------------------------------------------------
+
+// The owner hears everything; a DM hears public and its own DM; a channel
+// hears public and its own channel; what a worker saves stays in its
+// conversation whatever scope it asks for; no worker can set kami_* vars.
+func TestMemoryScopes(t *testing.T) {
+	e := newEnv(t)
+	for _, s := range []string{"public", "private", "conduct", "dm:U1", "dm:U2", "chan:C1"} {
+		e.must("memory", "save", "--about", "haithem", "--scope", s, "fact "+s)
+	}
+	dm := e.waitStatus(e.start_("memory", "--input", "kami_conv=dm", "--input", "kami_peer=U1"), "done", short)
+	expect(t, "dm hears", dm.Report, "[conduct] [dm:U1] [dm:U1] [public] | promoted=no")
+	group := e.waitStatus(e.start_("memory", "--input", "kami_conv=group", "--input", "kami_channel=C1"), "done", short)
+	expect(t, "channel hears", group.Report, "[chan:C1] [chan:C1] [conduct] [public] | promoted=no")
+	owner := e.waitStatus(e.start_("memory", "--input", "kami_conv=owner"), "done", short)
+	expect(t, "owner chat hears", owner.Report, "[conduct] [private] [private] [public] | promoted=no")
+	forged := e.waitStatus(e.start_("memory", "--input", "kami_conv=cli"), "done", short)
+	expect(t, "a run cannot claim the terminal", forged.Report, "none | promoted=no")
+	peerless := e.waitStatus(e.start_("memory", "--input", "kami_conv=dm"), "done", short)
+	expect(t, "a DM without its peer has no memory", peerless.Report, "none | promoted=no")
+	system := e.waitStatus(e.start_("memory"), "done", short)
+	expect(t, "a run with no conversation has no memory", system.Report, "none | promoted=no")
+	sig := e.start_("memory", "--input", "kami_conv=group", "--input", "kami_channel=SIG")
+	e.waitRun(sig, short, "waiting on promote", func(v runView) bool { return v.State == "listen" })
+	e.must("signal", "pub", "promote", "--data", `{"kami_conv": "owner"}`)
+	expect(t, "signal cannot promote", e.waitStatus(sig, "done", short).Report, "group")
+	var facts []state.Memory
+	json.Unmarshal(e.must("memory", "load", "--about", "haithem"), &facts)
+	if len(facts) != 6 { // the terminal hears every scope
+		t.Fatalf("owner load about haithem: %+v", facts)
+	}
+}
+
+// A worker that reported and then died with the daemon is not run again: the
+// reported outcome was saved and recovery applies it.
+func TestCrashAfterReport(t *testing.T) {
+	e := newEnv(t)
+	id := e.start_("linger")
+	e.waitRun(id, short, "reported", func(v runView) bool { return hasEvent(v, "step.reported") })
+	e.crash()
+	e.start()
+	v := e.waitStatus(id, "done", short)
+	n := 0
+	for _, ev := range v.Events {
+		if ev["type"] == "worker.started" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("worker started %d times; report %q", n, v.Report)
+	}
+}
+
+// A run parked on an old definition moves onto the edited workflow: its contract is
+// withdrawn and it carries on from the named state of the new definition.
+func TestUpgrade(t *testing.T) {
+	e := newEnv(t)
+	id := e.start_("lock")
+	e.openContract(id, short)
+	e.refused(4, "no state", "run", "upgrade", id, "--state", "fixed")
+	wf := filepath.Join(e.home, "kekkai", "test", "workflows", "lock.star")
+	raw, _ := os.ReadFile(wf)
+	os.WriteFile(wf, bytes.Replace(raw, []byte(`done("merged")`), []byte(`done("upgraded: {note}{kami_x}")`), 1), 0o600)
+	e.must("run", "upgrade", id, "--state", "merged", "--vars", `{"note": "make it bigger", "kami_x": "no"}`)
+	v := e.waitStatus(id, "done", short)
+	expect(t, "report", v.Report, "upgraded: make it bigger")
+	if !hasEvent(v, "run.upgraded") || !hasEvent(v, "contract.cancelled") {
+		t.Fatalf("events: %s", eventTypes(v))
+	}
+	e.refused(5, "already", "run", "upgrade", id)
+}
+
+// --- pause: a paused kekkai parks runs (across a restart) until resume -------------------
+
+func TestPause(t *testing.T) {
+	e := newEnv(t)
+	e.must("kekkai", "pause", "test", "--except", "script-step")
+	id := e.start_("probe-wait")
+	v := e.waitRun(id, short, "parked", func(v runView) bool { return hasEvent(v, "run.paused") })
+	expect(t, "status while paused", v.Status, "waiting")
+	free := e.start_("script-step", "--input", "word=hi")
+	e.waitStatus(free, "done", short) // an excepted workflow keeps going
+	e.crash()
+	e.start()
+	time.Sleep(time.Second)
+	expect(t, "status after restart", e.show(id).Status, "waiting")
+	e.must("kekkai", "resume", "test")
+	expect(t, "report", e.waitStatus(id, "done", short).Report, "3")
+	e.refused(5, "not paused", "kekkai", "resume", "test")
+	e.must("kekkai", "pause", "test", "--until", time.Now().Add(2*time.Second).Format(time.RFC3339))
+	id = e.start_("probe-wait")
+	expect(t, "report after --until", e.waitStatus(id, "done", short).Report, "3")
+
+	id = e.start_("probe-wait") // already waiting when the pause starts: its probes stop
+	e.must("kekkai", "pause", "test")
+	time.Sleep(3 * time.Second)
+	expect(t, "status with probes held", e.show(id).Status, "waiting")
+	e.must("kekkai", "resume", "test")
+	expect(t, "report after resume", e.waitStatus(id, "done", short).Report, "3")
+	// a wait's timer does not run out while paused: the pause's length is added back
+	id = e.start_("timer")
+	time.Sleep(500 * time.Millisecond)
+	e.must("kekkai", "pause", "test")
+	time.Sleep(3 * time.Second) // past the 2s timer
+	expect(t, "timer held", e.show(id).Status, "waiting")
+	e.must("kekkai", "resume", "test")
+	time.Sleep(800 * time.Millisecond)
+	expect(t, "timer still has its 1.5s left", e.show(id).Status, "waiting")
+	e.waitStatus(id, "done", short)
+}

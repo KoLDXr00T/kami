@@ -145,6 +145,23 @@ func (e *Engine) Handler() http.Handler {
 		reply(w, e.view(run), err)
 	})
 
+	m.HandleFunc("POST /runs/{id}/upgrade", func(w http.ResponseWriter, r *http.Request) {
+		if err := workerOnly(r); err != nil {
+			reply(w, nil, err)
+			return
+		}
+		var req struct {
+			State string
+			Vars  map[string]any
+		}
+		if err := decode(r, &req); err != nil {
+			reply(w, nil, err)
+			return
+		}
+		run, err := e.Upgrade(r.PathValue("id"), req.State, normMap(req.Vars))
+		reply(w, e.view(run), err)
+	})
+
 	m.HandleFunc("POST /signal", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Kekkai, Type, Key string
@@ -224,6 +241,30 @@ func (e *Engine) Handler() http.Handler {
 		v, err := e.AFKView(r.PathValue("run"))
 		reply(w, v, err)
 	})
+	m.HandleFunc("POST /kekkai/{k}/pause", func(w http.ResponseWriter, r *http.Request) {
+		if err := workerOnly(r); err != nil {
+			reply(w, nil, err)
+			return
+		}
+		var req struct {
+			Until  *time.Time
+			Except []string
+		}
+		if err := decode(r, &req); err != nil {
+			reply(w, nil, err)
+			return
+		}
+		p, err := e.PauseKekkai(r.PathValue("k"), req.Until, req.Except)
+		reply(w, p, err)
+	})
+	m.HandleFunc("POST /kekkai/{k}/resume", func(w http.ResponseWriter, r *http.Request) {
+		if err := workerOnly(r); err != nil {
+			reply(w, nil, err)
+			return
+		}
+		ids, err := e.ResumeKekkai(r.PathValue("k"))
+		reply(w, map[string]any{"resumed": ids}, err)
+	})
 	m.HandleFunc("POST /triggers/reload", func(w http.ResponseWriter, r *http.Request) {
 		reply(w, e.ReloadTriggers(), nil)
 	})
@@ -232,6 +273,27 @@ func (e *Engine) Handler() http.Handler {
 	worker := func(w http.ResponseWriter, r *http.Request) (string, string) {
 		return r.Header.Get("X-Kami-Run"), r.Header.Get("X-Kami-Token")
 	}
+	// memory: shared between the owner (no token) and every worker, filtered by
+	// the caller's conversation
+	m.HandleFunc("POST /memory", func(w http.ResponseWriter, r *http.Request) {
+		run, tok := worker(w, r)
+		var req struct{ About, Fact, Scope string }
+		if err := decode(r, &req); err != nil {
+			reply(w, nil, err)
+			return
+		}
+		f, err := e.Remember(run, tok, req.About, req.Fact, req.Scope)
+		reply(w, f, err)
+	})
+	m.HandleFunc("GET /memory", func(w http.ResponseWriter, r *http.Request) {
+		run, tok := worker(w, r)
+		fs, err := e.Recall(run, tok, r.URL.Query().Get("about"), r.URL.Query().Get("q"))
+		reply(w, fs, err)
+	})
+	m.HandleFunc("DELETE /memory/{id}", func(w http.ResponseWriter, r *http.Request) {
+		_, tok := worker(w, r)
+		reply(w, map[string]any{"forgot": r.PathValue("id")}, e.Forget(tok, r.PathValue("id")))
+	})
 	m.HandleFunc("POST /worker/done", func(w http.ResponseWriter, r *http.Request) {
 		run, tok := worker(w, r)
 		var req struct {
@@ -546,7 +608,7 @@ func (e *Engine) Status() map[string]any {
 		}
 	}
 	return map[string]any{"pid": os.Getpid(), "home": e.Home, "memento_namespace": e.Mem.NS, "runs": by,
-		"open_contracts": open, "running_processes": len(e.procs), "triggers": trig,
+		"open_contracts": open, "running_processes": len(e.procs), "triggers": trig, "paused": e.pauses,
 		"version": fmt.Sprintf("kami %s", Version)}
 }
 

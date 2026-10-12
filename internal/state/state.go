@@ -92,6 +92,8 @@ CREATE TABLE IF NOT EXISTS auras(run_id TEXT NOT NULL, step TEXT NOT NULL, seq I
 CREATE TABLE IF NOT EXISTS defs(hash TEXT PRIMARY KEY, kekkai TEXT NOT NULL, workflow TEXT NOT NULL,
   entry TEXT NOT NULL, files TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS triggers(id TEXT PRIMARY KEY, last_fired TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS memory(id TEXT PRIMARY KEY, about TEXT NOT NULL, fact TEXT NOT NULL,
+  scope TEXT NOT NULL, source TEXT NOT NULL, created_at TEXT NOT NULL);
 `
 
 // Ensure creates the namespace and tables if they do not exist yet.
@@ -101,9 +103,9 @@ func (m *Memento) Ensure() error {
 			return err
 		}
 	}
-	rows, err := m.Query("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name IN ('runs','contracts','auras','defs','triggers')")
+	rows, err := m.Query("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name IN ('runs','contracts','auras','defs','triggers','memory')")
 	if err == nil && len(rows) == 1 {
-		if n, _ := rows[0]["n"].(float64); n == 5 {
+		if n, _ := rows[0]["n"].(float64); n == 6 {
 			return nil
 		}
 	}
@@ -191,6 +193,62 @@ func (m *Memento) Docs(table, where string) ([]json.RawMessage, error) {
 		out = append(out, json.RawMessage(s))
 	}
 	return out, nil
+}
+
+// Memory is one remembered fact. Scope decides who may hear it: public,
+// private (the owner only), dm:<user> (that DM and the owner), chan:<channel>
+// (that channel and the owner).
+type Memory struct {
+	ID      string `json:"id"`
+	About   string `json:"about"`
+	Fact    string `json:"fact"`
+	Scope   string `json:"scope"`
+	Source  string `json:"source"`
+	Created string `json:"created_at"`
+}
+
+// SaveMemory adds a fact.
+func (m *Memento) SaveMemory(f Memory) error {
+	return m.Exec(fmt.Sprintf(`INSERT INTO memory(id,about,fact,scope,source,created_at) VALUES(%s,%s,%s,%s,%s,%s);`,
+		Q(f.ID), Q(f.About), Q(f.Fact), Q(f.Scope), Q(f.Source), Q(f.Created)), "kami: remember "+f.ID)
+}
+
+// Memories returns the facts in scopes (all scopes when nil) whose about or
+// fact contains each of the needles, newest first, at most limit.
+func (m *Memento) Memories(scopes []string, about, text string, limit int) ([]Memory, error) {
+	var where []string
+	if scopes != nil {
+		qs := make([]string, len(scopes))
+		for i, s := range scopes {
+			qs[i] = Q(s)
+		}
+		where = append(where, "scope IN ("+strings.Join(append(qs, "''"), ",")+")")
+	}
+	if about != "" {
+		where = append(where, "lower(about) LIKE "+Q("%"+strings.ToLower(about)+"%"))
+	}
+	if text != "" {
+		where = append(where, "(lower(fact) LIKE "+Q("%"+strings.ToLower(text)+"%")+" OR lower(about) LIKE "+Q("%"+strings.ToLower(text)+"%")+")")
+	}
+	q := "SELECT id,about,fact,scope,source,created_at FROM memory"
+	if len(where) > 0 {
+		q += " WHERE " + strings.Join(where, " AND ")
+	}
+	rows, err := m.Query(q + fmt.Sprintf(" ORDER BY created_at DESC LIMIT %d", limit))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Memory, 0, len(rows))
+	for _, r := range rows {
+		s := func(k string) string { v, _ := r[k].(string); return v }
+		out = append(out, Memory{ID: s("id"), About: s("about"), Fact: s("fact"), Scope: s("scope"), Source: s("source"), Created: s("created_at")})
+	}
+	return out, nil
+}
+
+// ForgetMemory deletes a fact.
+func (m *Memento) ForgetMemory(id string) error {
+	return m.Exec("DELETE FROM memory WHERE id="+Q(id)+";", "kami: forget "+id)
 }
 
 // Def is a pinned workflow bundle.

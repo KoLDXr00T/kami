@@ -90,6 +90,11 @@ func Validate(w *Workflow, k *kekkai.Kekkai) []string {
 				add("%s: %s needs at least one outcome", where, s.Kind)
 			}
 		}
+		for o := range s.Say {
+			if o != "" && !has(o) {
+				add("%s: say names outcome %q, which the state does not have", where, o)
+			}
+		}
 		for f, t := range s.Fields {
 			if !ValidType(t) {
 				add("%s: field %q has unknown type %q", where, f, t)

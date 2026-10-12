@@ -40,6 +40,9 @@ kami run start <workflow> --afk grace=10m            # AFK for this run
 kami run list --status active                        # running, sleeping, waiting
 kami run show <id>                                   # state, vars, contracts, aura, events
 kami run cancel <id>                                 # cancels children too
+kami run upgrade <id> [--state S] [--vars JSON]      # move a waiting run onto the edited workflow (vars merged in)
+kami kekkai pause <k> [--until 09:00] [--except chat,converse]   # hold its runs (new steps, probes, crons) until resume
+kami kekkai resume <k>
 ```
 
 A run's status: `running` (worker/script executing), `sleeping` (a worker
@@ -92,6 +95,74 @@ kami events tail -f [--type contract.] [--run <id>]   # NDJSON with --json
 
 `kami events tail -f --json` is the stream future adapters (jane, phoenix,
 Slack) consume.
+
+## Memory
+
+```sh
+kami memory save --about haithem [--scope public|private|dm:<user>|chan:<channel>] "hates tabs"
+kami memory load [--about haithem] [--q tabs]
+kami memory forget <id>
+```
+
+Shared by the owner (you, from the terminal: you hear everything; saves default to
+`private`) and every worker. A run's conversation comes from its `kami_conv`,
+`kami_peer` and `kami_channel` inputs, which workers can never set: a DM with a
+coworker hears `public` and its own `dm:<user>`, a channel hears `public` and its
+own `chan:<channel>`, and whatever they save stays in that conversation. When the
+user says "remember X about Y", save it about Y; ask before making it `public`.
+
+## Slack
+
+`power` (POWER, github.com/kidkuddy/power: `make install` there) is Kami's Slack surface on niffty's
+Slack app; niffty must be stopped while it serves.
+
+```sh
+power serve [--kekkai K] [--poll 5s]        # contracts → owner DMs; buttons / thread replies resolve them
+      [--chat-kekkai work] [--chat-workflow chat] # every other owner DM → a chat run
+power dm "text"                             # DM the owner (stdin when no args); prints {"channel","ts"}
+power dm --thread <ts> "text"                # reply in a thread of the owner DM
+power canvas [--key slug] "Title" < doc.md  # private canvas for the owner; prints its URL; same key = same canvas
+```
+
+Script steps use `dm` and `canvas` to reach the user.
+
+A run lives in the Slack thread named by its var `thread_ts` (or the nearest
+ancestor's, via `parent`). Its contracts are posted into that thread with their
+buttons, and the thread gets one line per milestone: `run.say` text,
+`↳ started <workflow>` for a child, `✅ <workflow>: <report>` /
+`❌ <workflow> <status>: <report>` on finish. Thread-less runs: contracts as
+top-level DMs, no milestones. A reply in a run thread answers the single open
+contract there that takes text (an `ask` from a state or worker, `form`, or an option matching the
+reply); none or several → chat.
+
+Owner DMs that are not contract replies are chat, keyed by thread (`thread_ts`,
+or the message's own ts at top level). Each is published as signal
+`slack.message` (key = thread, `data: {text, ts, history}`) to the chat kekkai.
+A chat run waiting on it gets it. If a chat run owns the thread but is busy,
+the message is queued and retried each poll. With no run, a `chat` run starts
+with inputs `thread_ts`, `channel`, `text`, `history` (`owner:` / `bot:` lines),
+`thread_runs` (ids of the runs tied to the thread, comma-separated).
+A chat workflow answers with `power dm --thread {thread_ts} "…"` and
+waits on `slack.message` keyed by `{thread_ts}` for the next turn. A contract answered from
+Slack shows `note: via slack (power)`.
+
+### Audit
+
+Every Slack message in and out (contracts, follow-ups, milestones, button taps with value
+and answer, reactions, canvases, chat routing: `signalled` / `queued` /
+`started` with run ids, errors) is one NDJSON line in
+`$KAMI_HOME/adapters/slack-transcript.ndjson`, full text, no tokens.
+
+```sh
+power log [-f] [--run R] [--contract C] [--thread T] [--json]  # the transcript, filtered; -f follows
+power threads [--since 24h] [--json]      # threads: root ts, first line, messages, last activity, runs, contracts
+power thread <ts> [--json]                # one thread live from Slack, oldest first, with its contract/run ids
+```
+
+Then the Kami side: `kami run show <run>` (events, vars, contracts); each step
+attempt's `~/.kami/runs/<run>/<state>.<visit>.<attempt>/` with `prompt.md`,
+`stdout.log`, `stderr.log`; and Claude's session JSONL under
+`$CLAUDE_CONFIG_DIR/projects/`, named by the `session_id` in `stdout.log`.
 
 ## When something is stuck
 

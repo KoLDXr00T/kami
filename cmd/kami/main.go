@@ -100,11 +100,12 @@ const usage = `kami — the Kami agent OS
   kami status                              daemon, runs, open contracts
 
   kami kekkai list | current | switch <name> | validate [<name>] | reload
+  kami kekkai pause <name> [--until HH:MM|RFC3339] [--except wf,wf] | resume <name>
   kami workflow list | validate <file|name> | dry-run <file|name>   [--kekkai K]
 
   kami run start <workflow>[:<entry>] [--kekkai K] [--input k=v]... [--inputs JSON] [--afk MODE]
   kami run list [--status S|active] [--kekkai K] [--var k=v]...
-  kami run show <id> | cancel <id>
+  kami run show <id> | cancel <id> | upgrade <id> [--state S] [--vars JSON]
 
   kami signal pub <type> [--key K] [--data JSON] [--kekkai K]
 
@@ -114,6 +115,12 @@ const usage = `kami — the Kami agent OS
   kami afk show <run> | set <attended|afk|grace=10m> (--run ID | --contract ID)
 
   kami events tail [-f] [--since ID] [--type PREFIX] [--kekkai K] [--run R]
+
+  kami memory save [--about WHO] [--scope public|private|conduct|dm:<user>|chan:<channel>] <fact...>
+  kami memory load [--about WHO] [--q TEXT]      facts this conversation may hear (all, for you)
+  kami memory forget <id>                         owner only
+    shared by you and every worker; a worker in a DM or channel only hears public facts and
+    its own conversation's, and what it saves stays in that conversation
 
   worker side (KAMI_RUN and KAMI_TOKEN set by the harness):
   kami step done --outcome O [--vars JSON]
@@ -166,6 +173,8 @@ func run(args []string) error {
 		return cmdStepDone(tailArgs(rest))
 	case "state":
 		return cmdState(sub, tailArgs(rest))
+	case "memory":
+		return cmdMemory(sub, tailArgs(rest))
 	}
 	return fail("USAGE", "unknown command %q (kami help)", cmd)
 }
@@ -493,8 +502,34 @@ func cmdRun(sub string, args []string) error {
 			return err
 		}
 		return emit(data, func() { fmt.Printf("cancelled %s\n", r.ID) })
+	case "upgrade":
+		usage := fail("USAGE", "usage: kami run upgrade <id> [--state S] [--vars JSON]")
+		if len(args) < 1 || len(args)%2 == 0 {
+			return usage
+		}
+		body := map[string]any{}
+		for i := 1; i < len(args); i += 2 {
+			switch args[i] {
+			case "--state":
+				body["state"] = args[i+1]
+			case "--vars":
+				var vars map[string]any
+				if err := json.Unmarshal([]byte(args[i+1]), &vars); err != nil {
+					return fail("USAGE", "--vars: %v", err)
+				}
+				body["vars"] = vars
+			default:
+				return usage
+			}
+		}
+		var r engine.Run
+		data, err := call("POST", "/runs/"+url.PathEscape(args[0])+"/upgrade", body, &r)
+		if err != nil {
+			return err
+		}
+		return emit(data, func() { fmt.Printf("upgraded %s → %s\n", r.ID, r.State) })
 	}
-	return fail("USAGE", "usage: kami run start|list|show|cancel")
+	return fail("USAGE", "usage: kami run start|list|show|cancel|upgrade")
 }
 
 func showRun(r *engine.Run, cs []engine.ContractView, auras []engine.Aura, kids []engine.RunBrief, events []map[string]any) {
@@ -963,4 +998,61 @@ func cmdState(sub string, args []string) error {
 		return emitValue(out, func() { fmt.Println(pretty(out)) })
 	}
 	return fail("USAGE", "usage: kami state snapshot|show")
+}
+
+// --- memory ---------------------------------------------------------------------------
+
+func cmdMemory(sub string, args []string) error {
+	f, err := parse(args, map[string]bool{"about": true, "scope": true, "q": true}, nil)
+	if err != nil {
+		return err
+	}
+	switch sub {
+	case "save":
+		fact := strings.Join(f.pos, " ")
+		if fact == "" {
+			return fail("USAGE", "usage: kami memory save [--about WHO] [--scope S] <fact...>")
+		}
+		var m map[string]any
+		data, err := call("POST", "/memory", map[string]any{"about": f.get("about"), "fact": fact, "scope": f.get("scope")}, &m)
+		if err != nil {
+			return err
+		}
+		return emit(data, func() { fmt.Printf("remembered %s (%s)\n", m["id"], m["scope"]) })
+	case "load":
+		var ms []map[string]any
+		q := url.Values{}
+		if v := f.get("about"); v != "" {
+			q.Set("about", v)
+		}
+		if v := f.get("q"); v != "" {
+			q.Set("q", v)
+		}
+		data, err := call("GET", "/memory?"+q.Encode(), nil, &ms)
+		if err != nil {
+			return err
+		}
+		return emit(data, func() {
+			if len(ms) == 0 {
+				fmt.Println("nothing remembered")
+			}
+			for _, m := range ms {
+				about := m["about"]
+				if about == "" {
+					about = "-"
+				}
+				fmt.Printf("%s  %s  [%s]  %s\n", m["id"], about, m["scope"], m["fact"])
+			}
+		})
+	case "forget":
+		if len(f.pos) != 1 {
+			return fail("USAGE", "usage: kami memory forget <id>")
+		}
+		data, err := call("DELETE", "/memory/"+url.PathEscape(f.pos[0]), nil, nil)
+		if err != nil {
+			return err
+		}
+		return emit(data, func() { fmt.Println("forgot " + f.pos[0]) })
+	}
+	return fail("USAGE", "usage: kami memory save|load|forget")
 }

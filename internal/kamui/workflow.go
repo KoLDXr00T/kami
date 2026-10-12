@@ -60,6 +60,9 @@ const (
 type Step struct {
 	Kind      string
 	MaxVisits int
+	// Say is a one-line milestone emitted (event run.say) when the step
+	// finishes: "" for all outcomes, or keyed by outcome.
+	Say map[string]string
 
 	// agent
 	Worker      string

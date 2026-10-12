@@ -305,6 +305,28 @@ func strList(fn, field string, v starlark.Value) ([]string, error) {
 	return out, nil
 }
 
+// parseSay accepts say = "text" (every outcome) or say = {"outcome": "text"}.
+func parseSay(fn string, v starlark.Value) (map[string]string, error) {
+	switch x := v.(type) {
+	case nil, starlark.NoneType:
+		return nil, nil
+	case starlark.String:
+		return map[string]string{"": string(x)}, nil
+	case *starlark.Dict:
+		out := map[string]string{}
+		for _, it := range x.Items() {
+			k, ok1 := starlark.AsString(it[0])
+			t, ok2 := starlark.AsString(it[1])
+			if !ok1 || !ok2 {
+				return nil, fmt.Errorf("%s: say must map outcomes to strings", fn)
+			}
+			out[k] = t
+		}
+		return out, nil
+	}
+	return nil, fmt.Errorf("%s: say must be a string or a dict of outcome -> string", fn)
+}
+
 func optStr(v starlark.Value) string {
 	if s, ok := starlark.AsString(v); ok {
 		return s
@@ -315,11 +337,11 @@ func optStr(v starlark.Value) string {
 func bAgent(t *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kw []starlark.Tuple) (starlark.Value, error) {
 	var worker starlark.Value
 	var instruction string
-	var skills, inputs, cwd, timeout, resume starlark.Value
+	var skills, inputs, cwd, timeout, resume, say starlark.Value
 	maxVisits := 0
 	if err := starlark.UnpackArgs("agent", args, kw, "worker", &worker, "instruction", &instruction,
 		"skills?", &skills, "inputs?", &inputs, "cwd?", &cwd, "timeout?", &timeout,
-		"resume?", &resume, "max_visits?", &maxVisits); err != nil {
+		"resume?", &resume, "max_visits?", &maxVisits, "say?", &say); err != nil {
 		return nil, err
 	}
 	s := &Step{Kind: KAgent, Instruction: instruction, MaxVisits: maxVisits, Cwd: optStr(cwd), Resume: optStr(resume)}
@@ -347,15 +369,18 @@ func bAgent(t *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kw []
 	if s.Resume != "" && s.Resume != "aura" && s.Resume != "session" {
 		return nil, fmt.Errorf("agent: resume must be \"aura\" or \"session\"")
 	}
+	if s.Say, err = parseSay("agent", say); err != nil {
+		return nil, err
+	}
 	return stepValue{s}, nil
 }
 
 func bScript(t *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kw []starlark.Tuple) (starlark.Value, error) {
 	var cmd string
-	var inputs, cwd, timeout starlark.Value
+	var inputs, cwd, timeout, say starlark.Value
 	maxVisits := 0
 	if err := starlark.UnpackArgs("script", args, kw, "cmd", &cmd, "inputs?", &inputs, "cwd?", &cwd,
-		"timeout?", &timeout, "max_visits?", &maxVisits); err != nil {
+		"timeout?", &timeout, "max_visits?", &maxVisits, "say?", &say); err != nil {
 		return nil, err
 	}
 	s := &Step{Kind: KScript, Cmd: cmd, Cwd: optStr(cwd), MaxVisits: maxVisits}
@@ -372,14 +397,17 @@ func bScript(t *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kw [
 	if _, err := SplitCommand(cmd); err != nil {
 		return nil, fmt.Errorf("script: %w", err)
 	}
+	if s.Say, err = parseSay("script", say); err != nil {
+		return nil, err
+	}
 	return stepValue{s}, nil
 }
 
 func bWait(t *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kw []starlark.Tuple) (starlark.Value, error) {
-	var signal, key, timer, probe, every, timeout, cwd starlark.Value
+	var signal, key, timer, probe, every, timeout, cwd, say starlark.Value
 	maxVisits := 0
 	if err := starlark.UnpackArgs("wait", args, kw, "signal?", &signal, "key?", &key, "timer?", &timer,
-		"probe?", &probe, "every?", &every, "timeout?", &timeout, "cwd?", &cwd, "max_visits?", &maxVisits); err != nil {
+		"probe?", &probe, "every?", &every, "timeout?", &timeout, "cwd?", &cwd, "max_visits?", &maxVisits, "say?", &say); err != nil {
 		return nil, err
 	}
 	s := &Step{Kind: KWait, Signal: optStr(signal), Key: optStr(key), Probe: optStr(probe), Cwd: optStr(cwd), MaxVisits: maxVisits}
@@ -404,15 +432,18 @@ func bWait(t *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kw []s
 			return nil, fmt.Errorf("wait: probe: %w", err)
 		}
 	}
+	if s.Say, err = parseSay("wait", say); err != nil {
+		return nil, err
+	}
 	return stepValue{s}, nil
 }
 
 func bSpawn(t *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kw []starlark.Tuple) (starlark.Value, error) {
 	var workflow string
-	var forEach, input starlark.Value
+	var forEach, input, say starlark.Value
 	maxVisits := 0
 	if err := starlark.UnpackArgs("spawn", args, kw, "workflow", &workflow, "for_each", &forEach,
-		"input?", &input, "max_visits?", &maxVisits); err != nil {
+		"input?", &input, "max_visits?", &maxVisits, "say?", &say); err != nil {
 		return nil, err
 	}
 	s := &Step{Kind: KSpawn, Workflow: workflow, MaxVisits: maxVisits}
@@ -430,6 +461,10 @@ func bSpawn(t *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kw []
 			return nil, fmt.Errorf("spawn: input must be a function (item, vars) -> dict")
 		}
 		s.InputFn = c
+	}
+	var err error
+	if s.Say, err = parseSay("spawn", say); err != nil {
+		return nil, err
 	}
 	return stepValue{s}, nil
 }
@@ -455,12 +490,12 @@ func bTerminal(kind string) func(*starlark.Thread, *starlark.Builtin, starlark.T
 func bContract(kind string) func(*starlark.Thread, *starlark.Builtin, starlark.Tuple, []starlark.Tuple) (starlark.Value, error) {
 	return func(t *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kw []starlark.Tuple) (starlark.Value, error) {
 		var title string
-		var body, bodyFile, fields, resolver, mode, grace, def starlark.Value
+		var body, bodyFile, fields, resolver, mode, grace, def, say starlark.Value
 		lock := false
 		maxVisits := 0
 		if err := starlark.UnpackArgs(kind, args, kw, "title", &title, "body?", &body, "body_file?", &bodyFile,
 			"fields?", &fields, "resolver?", &resolver, "mode?", &mode, "grace?", &grace, "lock?", &lock,
-			"default?", &def, "max_visits?", &maxVisits); err != nil {
+			"default?", &def, "max_visits?", &maxVisits, "say?", &say); err != nil {
 			return nil, err
 		}
 		s := &Step{Kind: kind, Title: title, BodyFile: optStr(bodyFile), Resolver: optStr(resolver),
@@ -505,6 +540,10 @@ func bContract(kind string) func(*starlark.Thread, *starlark.Builtin, starlark.T
 		}
 		if s.HumanOnly() && (s.Resolver != "" || (s.Mode != nil && s.Mode.Kind != "attended")) {
 			return nil, fmt.Errorf("%s %q: only a human can resolve it, so it takes no resolver or AFK mode", kind, title)
+		}
+		var err error
+		if s.Say, err = parseSay(kind, say); err != nil {
+			return nil, err
 		}
 		return stepValue{s}, nil
 	}

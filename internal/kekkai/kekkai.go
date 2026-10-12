@@ -16,11 +16,20 @@ import (
 // Worker is one named worker in kekkai.yaml.
 type Worker struct {
 	Provider       string   `yaml:"provider" json:"provider"` // claude | codex | fake
+	Bin            string   `yaml:"bin" json:"bin,omitempty"` // claude/codex binary; default from PATH (e.g. claude to follow the active account)
 	Model          string   `yaml:"model" json:"model,omitempty"`
 	Effort         string   `yaml:"effort" json:"effort,omitempty"`
 	Command        string   `yaml:"command" json:"command,omitempty"` // fake provider: script run as the worker
 	Tools          []string `yaml:"tools" json:"tools,omitempty"`
 	PermissionMode string   `yaml:"permission_mode" json:"permission_mode,omitempty"`
+	// Available narrows claude's built-in tools to these (--tools); Tools then
+	// says which of them are allowed. Empty: every built-in tool exists.
+	Available []string `yaml:"available" json:"available,omitempty"`
+	// Kami is the kami subcommands the worker may run ("step done", "memory");
+	// empty: all of them.
+	Kami []string `yaml:"kami" json:"kami,omitempty"`
+	// Prompt replaces the kekkai's prompt file for this worker.
+	Prompt string `yaml:"prompt" json:"prompt,omitempty"`
 }
 
 // Mode is an AFK mode as written in config: kind attended | grace | afk.
@@ -88,6 +97,12 @@ func LoadDir(dir, name string) (*Kekkai, error) {
 			return nil, fmt.Errorf("kekkai %s: %w", name, err)
 		}
 		k.Env = env
+	}
+	for n, w := range k.Workers {
+		if w.Bin != "" {
+			w.Bin = ExpandHome(w.Bin)
+			k.Workers[n] = w
+		}
 	}
 	for i, r := range k.CwdRoots {
 		k.CwdRoots[i] = ExpandHome(r)
@@ -182,7 +197,9 @@ func (k *Kekkai) CheckCwd(dir string) (string, error) {
 // the kekkai env file, a minimal set of process variables, and extra.
 func (k *Kekkai) WorkerEnv(extra map[string]string) []string {
 	m := map[string]string{}
-	for _, key := range []string{"PATH", "HOME", "USER", "LOGNAME", "LANG", "TMPDIR", "TERM", "SHELL"} {
+	// CLAUDE_CONFIG_DIR / CODEX_HOME pick the logged-in account; without them
+	// claude falls back to ~/.claude, which may not be logged in.
+	for _, key := range []string{"PATH", "HOME", "USER", "LOGNAME", "LANG", "TMPDIR", "TERM", "SHELL", "CLAUDE_CONFIG_DIR", "CODEX_HOME"} {
 		if v, ok := os.LookupEnv(key); ok {
 			m[key] = v
 		}

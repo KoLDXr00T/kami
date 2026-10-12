@@ -39,6 +39,7 @@ type Engine struct {
 	procs     map[string]*proc // run id -> running worker/script
 	resolvers map[string]*proc // contract id -> running resolver
 	triggers  map[string]time.Time
+	pauses    map[string]*Pause // kekkai -> its pause
 	closed    bool
 }
 
@@ -163,6 +164,7 @@ func (e *Engine) Boot() error {
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	e.loadPauses()
 	ids := make([]string, 0, len(e.runs))
 	for id, r := range e.runs {
 		if !Terminal(r.Status) {
@@ -199,6 +201,11 @@ func (e *Engine) recover(r *Run) {
 			e.reapplyContract(st.Contract)
 			return
 		}
+		if p := st.Pending; p != nil { // it had already reported: finish the step, do not redo it
+			st.Pending, st.Phase, st.Token = nil, "done", ""
+			e.outcome(r, p.Outcome, p.Vars)
+			return
+		}
 		e.startAgent(r, &wake{note: "The daemon restarted while the previous attempt was running. Check what it already did before repeating any action."})
 	case kamui.KScript:
 		e.startScript(r)
@@ -208,6 +215,8 @@ func (e *Engine) recover(r *Run) {
 		e.checkChildren(r)
 	case "blocked":
 		e.reapplyContract(st.Contract)
+	case "paused":
+		e.enter(r, r.State) // parks again while the kekkai is still paused
 	default:
 		if e.def(r).States[r.State] != nil && e.def(r).States[r.State].Step.IsContract() {
 			e.reapplyContract(st.Contract)
@@ -372,6 +381,10 @@ func (e *Engine) enter(r *Run, name string) {
 		e.finish(r, StFailed, fmt.Sprintf("state %q does not exist", name))
 		return
 	}
+	if e.held(r) {
+		e.park(r, name)
+		return
+	}
 	r.Visits[name]++
 	r.State = name
 	if limit := w.MaxVisitsFor(name); r.Visits[name] > limit {
@@ -433,6 +446,12 @@ func (e *Engine) outcome(r *Run, out string, vars map[string]any) {
 		if k == "visits" {
 			continue
 		}
+		// kami_* (the conversation a run speaks for) come from its inputs only: never from a
+		// worker, a signal's data, a script or a contract's answer data
+		if strings.HasPrefix(k, "kami_") {
+			e.event(r, "vars.refused", map[string]any{"state": r.State, "var": k})
+			continue
+		}
 		r.Vars[k] = v
 	}
 	next, err := e.def(r).Next(r.State, out)
@@ -442,6 +461,16 @@ func (e *Engine) outcome(r *Run, out string, vars map[string]any) {
 		return
 	}
 	e.event(r, "step.outcome", map[string]any{"state": r.State, "outcome": out, "next": next})
+	if say := e.def(r).States[r.State].Step.Say; say != nil {
+		tmpl, ok := say[out]
+		if !ok {
+			tmpl, ok = say[""]
+		}
+		if ok {
+			text, _ := kamui.Render(tmpl, r.Vars)
+			e.event(r, "run.say", map[string]any{"state": r.State, "outcome": out, "text": text})
+		}
+	}
 	e.enter(r, next)
 }
 
@@ -454,14 +483,7 @@ func (e *Engine) finish(r *Run, status, report string) {
 	if p := e.procs[r.ID]; p != nil {
 		p.kill()
 	}
-	for _, c := range e.contracts {
-		if c.RunID == r.ID && c.Status == "open" {
-			c.Status = "cancelled"
-			e.stopTimer("contract:" + c.ID)
-			e.saveContract(c, "cancelled: run finished")
-			e.event(r, "contract.cancelled", map[string]any{"id": c.ID})
-		}
-	}
+	e.cancelContracts(r, "run finished")
 	r.Status, r.Report, r.Outcome = status, report, r.State
 	if r.Step != nil {
 		r.Step.Phase, r.Step.Token = "done", ""
@@ -473,6 +495,64 @@ func (e *Engine) finish(r *Run, status, report string) {
 			e.checkChildren(p)
 		}
 	}
+}
+
+func (e *Engine) cancelContracts(r *Run, why string) {
+	for _, c := range e.contracts {
+		if c.RunID == r.ID && c.Status == "open" {
+			c.Status = "cancelled"
+			e.stopTimer("contract:" + c.ID)
+			e.saveContract(c, "cancelled: "+why)
+			e.event(r, "contract.cancelled", map[string]any{"id": c.ID})
+		}
+	}
+}
+
+// Upgrade moves a parked run onto its workflow's current definition and enters
+// state (its current one when empty): runs stay pinned to the definition they
+// started with, so a fix to a workflow otherwise only reaches new runs. Its open
+// contracts are withdrawn. A run with a process or children still running is refused.
+func (e *Engine) Upgrade(id, state string, vars map[string]any) (*Run, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	r, err := e.findRun(id)
+	if err != nil {
+		return nil, err
+	}
+	if Terminal(r.Status) {
+		return nil, uerr("CONFLICT", "run %s is already %s", r.ID, r.Status)
+	}
+	if e.procs[r.ID] != nil || (r.Step != nil && (r.Step.probing || r.Step.Kind == kamui.KSpawn ||
+		(r.Step.Kind == kamui.KAgent && r.Step.Phase != "done"))) {
+		return nil, uerr("CONFLICT", "run %s is busy in %s: upgrade it while it waits", r.ID, r.State)
+	}
+	_, w, err := LoadWorkflow(e.Home, r.Kekkai, r.Workflow)
+	if err != nil {
+		return nil, err
+	}
+	if state == "" {
+		state = r.State
+	}
+	if w.States[state] == nil {
+		return nil, uerr("INVALID", "the current %s has no state %q", r.Workflow, state)
+	}
+	if _, ok := e.defs[w.Hash]; !ok {
+		if err := e.Mem.SaveDef(w.Hash, r.Kekkai, r.Workflow, w.Entry, w.Files); err != nil {
+			return nil, fmt.Errorf("pin workflow: %w", err)
+		}
+		e.defs[w.Hash] = w
+	}
+	e.stopTimer("run:" + r.ID)
+	e.cancelContracts(r, "run upgraded")
+	e.event(r, "run.upgraded", map[string]any{"from": r.DefHash, "to": w.Hash, "state": state})
+	for k, v := range vars { // kami_* stay what the run's inputs made them, as in outcome
+		if k != "visits" && !strings.HasPrefix(k, "kami_") {
+			r.Vars[k] = v
+		}
+	}
+	r.DefHash, r.Step, r.Status = w.Hash, nil, StRunning
+	e.enter(r, state)
+	return r, nil
 }
 
 // block parks the run on an engine contract (loop budget, a step that cannot
@@ -653,20 +733,36 @@ func (e *Engine) findContract(id string) (*Contract, error) {
 
 // --- timers ----------------------------------------------------------------------
 
+// setTimer runs f under the lock once the wall clock reaches at. Go timers
+// count monotonic time, which stops while macOS sleeps, so a timer armed for
+// 09:30 the evening before would fire hours late. Each timer therefore waits
+// at most a minute and re-checks the wall clock: after a sleep it fires
+// within a minute of waking.
 func (e *Engine) setTimer(key string, at time.Time, f func()) {
 	e.stopTimer(key)
+	at = at.Round(0) // wall clock only
 	d := time.Until(at)
 	if d < 0 {
 		d = 0
 	}
-	e.timers[key] = time.AfterFunc(d, func() {
+	if d > time.Minute {
+		d = time.Minute
+	}
+	var t *time.Timer
+	t = time.AfterFunc(d, func() {
 		e.mu.Lock()
 		defer e.mu.Unlock()
-		if e.closed {
+		if e.closed || e.timers[key] != t {
+			return // stopped or replaced meanwhile
+		}
+		if time.Now().Round(0).Before(at) {
+			e.setTimer(key, at, f)
 			return
 		}
+		delete(e.timers, key)
 		f()
 	})
+	e.timers[key] = t
 }
 
 func (e *Engine) stopTimer(key string) {

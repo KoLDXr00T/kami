@@ -1,11 +1,14 @@
 # Kami 神
 
-A local, event-driven agent OS. One Go binary, `kami`, runs a daemon that
-executes workflows written in Starlark. Their steps are headless Claude Code or
-Codex workers, or plain scripts. When a worker hits a decision it cannot make,
-it does not ask in chat: it posts a **contract**, saves a compact **Aura**
-snapshot, and exits. The run sleeps until you (or an AFK resolver) answer, and
-then a fresh worker continues from the Aura.
+**A local agent OS that asks before it guesses.**
+
+You write a workflow in Starlark. Kami runs it as a daemon on your machine: each step is a
+headless Claude Code or Codex worker, or a plain script. When a worker reaches a decision that
+belongs to you, it doesn't ask in chat and it doesn't guess. It posts a **contract**, saves a
+small **Aura** (what it was doing, what's next), and exits. The run sleeps for free until you
+answer. Then a fresh worker picks up from the Aura.
+
+<p align="center"><img src="docs/hello.gif" width="760" alt="kami: start a run, read the draft the agent parked, keep it"></p>
 
 | Name | What it is |
 |---|---|
@@ -16,8 +19,9 @@ then a fresh worker continues from the Aura.
 | Kekkai | a domain (`~/.kami/kekkai/<name>/`): its own env, prompt, skills, workflows, scripts |
 | Aura | a worker's snapshot before it sleeps: goal, progress, next, vars |
 
-Durable state (runs, contracts, Auras, pinned workflow files) lives in the
-memento namespace `kami`. The event log is `~/.kami/events.db`.
+Runs, contracts, Auras and the pinned workflow files live in the memento namespace `kami`, so a
+crash or a reboot loses nothing: the daemon picks every run back up. The event log is
+`~/.kami/events.db`.
 
 ## Build and run
 
@@ -70,6 +74,36 @@ worker protocol in [`skills/kami-worker/SKILL.md`](skills/kami-worker/SKILL.md).
 Ported dry runs of real skills (acme flow, proxy-pr, Suno) are in
 [`examples/kekkai/`](examples/kekkai/). The design and status are in
 [`PLAN.md`](PLAN.md).
+
+## Pause for the night
+
+`kami kekkai pause` holds a whole kekkai. A run that reaches its next step stops there. Runs
+already waiting stop probing, and their timeouts stop counting. Cron runs start held. Steps that
+are already running finish, and open decisions can still be answered. `--except` keeps some
+workflows going (your chats, say), and `--until` resumes the kekkai by itself.
+
+<p align="center"><img src="docs/pause.gif" width="760" alt="kami kekkai pause home --until 09:00, then resume"></p>
+
+```sh
+kami kekkai pause work --until 09:00 --except chat,converse
+kami kekkai resume work            # or wait for 09:00
+```
+
+## Slack: POWER
+
+Kami's Slack surface is [POWER](https://github.com/kidkuddy/power), a separate repo and binary
+(`power`). She DMs you every contract as buttons, threads each run, and routes your DMs to
+chat runs. She talks to the daemon over its socket and holds no workflows of her own.
+
+## Debugging a run
+
+- `kami run show <run>`: its events, vars and contracts.
+- `~/.kami/runs/<run>/<state>.<visit>.<attempt>/`: one directory per step
+  attempt, with `prompt.md`, `stdout.log` and `stderr.log`.
+- Claude's own session log: the JSONL under `$CLAUDE_CONFIG_DIR/projects/`
+  named by the `session_id` in that attempt's `stdout.log`.
+- `kami run upgrade <run> [--state S] [--vars JSON]`: after fixing a workflow, move a waiting
+  run onto the new definition (and into a state) instead of starting over.
 
 ## Tests
 

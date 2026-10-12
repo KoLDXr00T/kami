@@ -33,12 +33,15 @@ type Run struct {
 	Status      string         `json:"status"`
 	Vars        map[string]any `json:"vars"`
 	Visits      map[string]int `json:"visits"`
-	AFK         *kamui.AFK     `json:"afk_override,omitempty"`
-	Report      string         `json:"report,omitempty"`
-	Outcome     string         `json:"outcome,omitempty"` // terminal state name
-	Step        *StepState     `json:"step,omitempty"`
-	Created     time.Time      `json:"created_at"`
-	Updated     time.Time      `json:"updated_at"`
+	// Sessions remembers each agent state's last provider session
+	// ("provider:id"), so a resume = "session" step continues it on re-entry.
+	Sessions map[string]string `json:"sessions,omitempty"`
+	AFK      *kamui.AFK        `json:"afk_override,omitempty"`
+	Report   string            `json:"report,omitempty"`
+	Outcome  string            `json:"outcome,omitempty"` // terminal state name
+	Step     *StepState        `json:"step,omitempty"`
+	Created  time.Time         `json:"created_at"`
+	Updated  time.Time         `json:"updated_at"`
 }
 
 // StepState is what the current state is doing.
@@ -60,14 +63,14 @@ type StepState struct {
 	Children []string   `json:"children,omitempty"`
 	Silent   int        `json:"silent_exits,omitempty"` // attempts that exited without an outcome
 
-	pending *pending   // outcome reported by `kami step done`, applied when the process exits
+	Pending *pending   `json:"pending,omitempty"` // outcome reported by `kami step done`, applied when the process exits (or on recovery)
 	probeAt *time.Time // next probe; in memory only, a restart probes at once
 	probing bool
 }
 
 type pending struct {
-	Outcome string
-	Vars    map[string]any
+	Outcome string         `json:"outcome"`
+	Vars    map[string]any `json:"vars,omitempty"`
 }
 
 // Contract is one open or resolved decision.
