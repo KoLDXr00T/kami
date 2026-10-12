@@ -113,7 +113,7 @@ user says "remember X about Y", save it about Y; ask before making it `public`.
 
 ## Slack
 
-`kami-slack` (built by `make adapters`) is Kami's Slack surface on niffty's
+`kami-slack` (POWER, github.com/kidkuddy/power: `make install` there) is Kami's Slack surface on niffty's
 Slack app; niffty must be stopped while it serves.
 
 ```sh
