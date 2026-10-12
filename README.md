@@ -1,11 +1,14 @@
 # Kami 神
 
-A local, event-driven agent OS. One Go binary, `kami`, runs a daemon that
-executes workflows written in Starlark. Their steps are headless Claude Code or
-Codex workers, or plain scripts. When a worker hits a decision it cannot make,
-it does not ask in chat: it posts a **contract**, saves a compact **Aura**
-snapshot, and exits. The run sleeps until you (or an AFK resolver) answer, and
-then a fresh worker continues from the Aura.
+**A local agent OS that asks before it guesses.**
+
+You write a workflow in Starlark. Kami runs it as a daemon on your machine: each step is a
+headless Claude Code or Codex worker, or a plain script. When a worker reaches a decision that
+belongs to you, it doesn't ask in chat and it doesn't guess. It posts a **contract**, saves a
+small **Aura** (what it was doing, what's next), and exits. The run sleeps for free until you
+answer. Then a fresh worker picks up from the Aura.
+
+<p align="center"><img src="docs/hello.gif" width="760" alt="kami: start a run, read the draft the agent parked, keep it"></p>
 
 | Name | What it is |
 |---|---|
@@ -16,8 +19,9 @@ then a fresh worker continues from the Aura.
 | Kekkai | a domain (`~/.kami/kekkai/<name>/`): its own env, prompt, skills, workflows, scripts |
 | Aura | a worker's snapshot before it sleeps: goal, progress, next, vars |
 
-Durable state (runs, contracts, Auras, pinned workflow files) lives in the
-memento namespace `kami`. The event log is `~/.kami/events.db`.
+Runs, contracts, Auras and the pinned workflow files live in the memento namespace `kami`, so a
+crash or a reboot loses nothing: the daemon picks every run back up. The event log is
+`~/.kami/events.db`.
 
 ## Build and run
 
@@ -71,91 +75,35 @@ Ported dry runs of real skills (acme flow, proxy-pr, Suno) are in
 [`examples/kekkai/`](examples/kekkai/). The design and status are in
 [`PLAN.md`](PLAN.md).
 
-## Slack
+## Pause for the night
 
-`kami-slack` is Kami's Slack surface. It uses niffty's Slack app (it reads
-`SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN` and `NIFFTY_OWNER_ID` from
-`~/.local/share/niffty/.env`) and replaces niffty: keep niffty stopped while it
-runs, or both will receive the same Socket Mode events.
+`kami kekkai pause` holds a whole kekkai. A run that reaches its next step stops there. Runs
+already waiting stop probing, and their timeouts stop counting. Cron runs start held. Steps that
+are already running finish, and open decisions can still be answered. `--except` keeps some
+workflows going (your chats, say), and `--until` resumes the kekkai by itself.
 
-```sh
-make adapters                                   # bin/kami-slack (make install copies it to ~/.local/bin)
-kami-slack serve [--poll 5s] [--kekkai K]       # contracts → owner DMs; other DMs → chat runs
-      [--chat-kekkai work] [--chat-workflow chat]
-kami-slack dm "build finished"                  # or text on stdin; prints {"channel","ts"}
-kami-slack dm --thread <ts> "done"              # into a thread of the owner DM
-kami-slack canvas --key weekly "Weekly" < r.md  # private canvas shared with the owner; prints its URL
-```
-
-`serve` DMs every contract to the owner as it opens. A choice-like contract
-(options, no fields) gets one button per answer; tapping one resolves it and
-redraws the message with the answer. An `ask` or `form` is answered by replying
-in its thread: any text for an ask, `answer field=value …` for a form (values
-parse as JSON when they can). Only the owner's taps and replies count. Kami's
-refusal comes back in the thread; a contract resolved elsewhere, cancelled, or
-handed back by a failed resolver gets a follow-up.
-
-A run lives in a Slack thread: its var `thread_ts`, or the nearest ancestor's
-(walking `parent`). A contract of such a run is posted into that thread (same
-text and buttons; its follow-ups go there too), and the thread gets one line
-per milestone: `run.say` → its text, a child's `run.started` →
-`↳ started <workflow>`, `run.finished` → `✅ <workflow>: <report>` when done,
-`❌ <workflow> <status>: <report>` otherwise. A run with no thread gets no
-milestones and its contracts are top-level DMs as before. Milestones more than
-10 minutes old (replayed after downtime) are not posted. A `thread_ts` that Slack refuses
-(`invalid_thread_ts`) is treated as no thread: the contract goes top-level and
-the milestone is dropped, recorded as an `error` entry.
-
-An owner reply in a thread answers, in order: the contract whose top-level
-message the thread hangs under; else the one open contract of the thread's
-runs that takes text (an `ask`, from a state or a worker, a `form`, or a contract whose options
-include the reply, case-insensitive). No such contract, or more than one, and
-the reply is chat.
-
-Every other owner DM is chat. It gets a 👀 and is keyed by its thread (a
-top-level DM is the root of its own thread). It is published as a signal
-`slack.message` with that key in the chat kekkai (`data: {text, ts, history}`),
-for a chat run waiting on it. If none waits but an active run of the chat
-workflow has `thread_ts` = key, the run is busy: the message is queued and
-re-published, oldest first, on each poll until a run takes it. With no run at
-all, a new `chat` run starts with inputs `thread_ts`, `channel`, `text` (all
-queued messages), `history` (the thread so far as `owner:` / `bot:` lines,
-last ~8000 characters; empty for a top-level DM) and `thread_runs` (the ids of
-the runs tied to the thread, comma-separated). A run that cannot start posts
-Kami's error in the thread. `--chat-workflow ""` turns chat routing off.
-
-State (last event id, contract ↔ message, queued chat messages) is
-`$KAMI_HOME/adapters/slack.json`; a canvas key's id is
-`$KAMI_HOME/adapters/slack-canvas/<key>`, so the same key edits the same canvas.
-
-### Audit
-
-`serve`, `dm` and `canvas` append one NDJSON line per Slack message in or out
-to `$KAMI_HOME/adapters/slack-transcript.ndjson` (mode 0600): `logged_at`,
-`dir` (`in`/`out`), `kind` (`dm`, `thread_reply`, `button`, `reaction`,
-`canvas`, `contract`, `followup`, `milestone`, `chat_routed`, `error`), `channel`, `ts`,
-`thread_ts`, `user` (inbound), the full `text`, and when known `contract_id`,
-`run_id`, `workflow`, `canvas_url`, `error`. A button tap has its `value` and
-the `answer` Kami recorded; `chat_routed` says whether the message was
-`signalled` (with the `delivered` run ids), `queued`, or `started` a run (its
-`run_id`). A `dm` or `canvas` from a script step carries the step's `KAMI_RUN`.
-Tokens and HTTP headers are never written.
+<p align="center"><img src="docs/pause.gif" width="760" alt="kami kekkai pause home --until 09:00, then resume"></p>
 
 ```sh
-kami-slack log [-f] [--run R] [--contract C] [--thread T] [--json]  # the transcript, filtered; -f follows
-kami-slack threads [--since 24h] [--json]      # threads: root ts, first line, messages, last activity, runs, contracts
-kami-slack thread <ts> [--json]                # one thread live from Slack, oldest first, with its contract/run ids
+kami kekkai pause work --until 09:00 --except chat,converse
+kami kekkai resume work            # or wait for 09:00
 ```
 
-`thread` needs the Slack credentials; `log` and `threads` read only the file.
+## Slack: POWER
 
-The Kami side of a run:
+Kami's Slack surface is [POWER](https://github.com/kidkuddy/power), a separate repo and binary
+(`kami-slack`). She DMs you every contract as buttons, threads each run, and routes your DMs to
+chat runs. She talks to the daemon over its socket and holds no workflows of her own.
+
+## Debugging a run
 
 - `kami run show <run>`: its events, vars and contracts.
 - `~/.kami/runs/<run>/<state>.<visit>.<attempt>/`: one directory per step
   attempt, with `prompt.md`, `stdout.log` and `stderr.log`.
 - Claude's own session log: the JSONL under `$CLAUDE_CONFIG_DIR/projects/`
   named by the `session_id` in that attempt's `stdout.log`.
+- `kami run upgrade <run> [--state S] [--vars JSON]`: after fixing a workflow, move a waiting
+  run onto the new definition (and into a state) instead of starting over.
 
 ## Tests
 
