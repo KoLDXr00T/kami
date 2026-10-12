@@ -890,4 +890,14 @@ func TestPause(t *testing.T) {
 	expect(t, "status with probes held", e.show(id).Status, "waiting")
 	e.must("kekkai", "resume", "test")
 	expect(t, "report after resume", e.waitStatus(id, "done", short).Report, "3")
+	// a wait's timer does not run out while paused: the pause's length is added back
+	id = e.start_("timer")
+	time.Sleep(500 * time.Millisecond)
+	e.must("kekkai", "pause", "test")
+	time.Sleep(3 * time.Second) // past the 2s timer
+	expect(t, "timer held", e.show(id).Status, "waiting")
+	e.must("kekkai", "resume", "test")
+	time.Sleep(800 * time.Millisecond)
+	expect(t, "timer still has its 1.5s left", e.show(id).Status, "waiting")
+	e.waitStatus(id, "done", short)
 }

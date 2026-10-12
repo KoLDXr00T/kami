@@ -81,6 +81,8 @@ func (e *Engine) ResumeKekkai(k string) ([]string, error) {
 }
 
 func (e *Engine) resume(k string) []string {
+	p := e.pauses[k]
+	paused := now().Sub(p.Since)
 	delete(e.pauses, k)
 	e.stopTimer("pause:" + k)
 	e.savePauses()
@@ -95,11 +97,19 @@ func (e *Engine) resume(k string) []string {
 	for _, id := range ids {
 		r := e.runs[id]
 		switch {
+		case slices.Contains(p.Except, r.Workflow): // it kept going: nothing to make up
 		case r.Step != nil && r.Step.Kind == "paused":
 			resumed = append(resumed, id)
 			e.enter(r, r.State)
 		case r.Step != nil && r.Step.Kind == kamui.KWait && r.Step.Phase == "waiting" && !r.Step.probing:
+			// the pause did not count: its timeout and timer move on by its length
+			for _, t := range []*time.Time{r.Step.Deadline, r.Step.WakeAt} {
+				if t != nil {
+					*t = t.Add(paused)
+				}
+			}
 			r.Step.probeAt = nil // probe again now, not at the time the pause pushed it to
+			e.saveRun(r, "resumed")
 			e.scheduleRun(r)
 		}
 	}
@@ -114,7 +124,7 @@ func (e *Engine) park(r *Run, name string) {
 	e.event(r, "run.paused", map[string]any{"state": name})
 }
 
-// probeHeld pushes a held run's next probe to the end of the pause (or a minute out).
+// probeHeld pushes a held wait's next check to the end of the pause (or a minute out).
 func (e *Engine) probeHeld(r *Run) {
 	t := now().Add(time.Minute)
 	if p := e.pauses[r.Kekkai]; p != nil && p.Until != nil {
