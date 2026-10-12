@@ -92,7 +92,7 @@ kami kekkai resume work            # or wait for 09:00
 ## Slack: POWER
 
 Kami's Slack surface is [POWER](https://github.com/kidkuddy/power), a separate repo and binary
-(`kami-slack`). She DMs you every contract as buttons, threads each run, and routes your DMs to
+(`power`). She DMs you every contract as buttons, threads each run, and routes your DMs to
 chat runs. She talks to the daemon over its socket and holds no workflows of her own.
 
 ## Debugging a run

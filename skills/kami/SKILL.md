@@ -113,15 +113,15 @@ user says "remember X about Y", save it about Y; ask before making it `public`.
 
 ## Slack
 
-`kami-slack` (POWER, github.com/kidkuddy/power: `make install` there) is Kami's Slack surface on niffty's
+`power` (POWER, github.com/kidkuddy/power: `make install` there) is Kami's Slack surface on niffty's
 Slack app; niffty must be stopped while it serves.
 
 ```sh
-kami-slack serve [--kekkai K] [--poll 5s]        # contracts → owner DMs; buttons / thread replies resolve them
+power serve [--kekkai K] [--poll 5s]        # contracts → owner DMs; buttons / thread replies resolve them
       [--chat-kekkai work] [--chat-workflow chat] # every other owner DM → a chat run
-kami-slack dm "text"                             # DM the owner (stdin when no args); prints {"channel","ts"}
-kami-slack dm --thread <ts> "text"                # reply in a thread of the owner DM
-kami-slack canvas [--key slug] "Title" < doc.md  # private canvas for the owner; prints its URL; same key = same canvas
+power dm "text"                             # DM the owner (stdin when no args); prints {"channel","ts"}
+power dm --thread <ts> "text"                # reply in a thread of the owner DM
+power canvas [--key slug] "Title" < doc.md  # private canvas for the owner; prints its URL; same key = same canvas
 ```
 
 Script steps use `dm` and `canvas` to reach the user.
@@ -142,9 +142,9 @@ A chat run waiting on it gets it. If a chat run owns the thread but is busy,
 the message is queued and retried each poll. With no run, a `chat` run starts
 with inputs `thread_ts`, `channel`, `text`, `history` (`owner:` / `bot:` lines),
 `thread_runs` (ids of the runs tied to the thread, comma-separated).
-A chat workflow answers with `kami-slack dm --thread {thread_ts} "…"` and
+A chat workflow answers with `power dm --thread {thread_ts} "…"` and
 waits on `slack.message` keyed by `{thread_ts}` for the next turn. A contract answered from
-Slack shows `note: via slack (kami-slack)`.
+Slack shows `note: via slack (power)`.
 
 ### Audit
 
@@ -154,9 +154,9 @@ and answer, reactions, canvases, chat routing: `signalled` / `queued` /
 `$KAMI_HOME/adapters/slack-transcript.ndjson`, full text, no tokens.
 
 ```sh
-kami-slack log [-f] [--run R] [--contract C] [--thread T] [--json]  # the transcript, filtered; -f follows
-kami-slack threads [--since 24h] [--json]      # threads: root ts, first line, messages, last activity, runs, contracts
-kami-slack thread <ts> [--json]                # one thread live from Slack, oldest first, with its contract/run ids
+power log [-f] [--run R] [--contract C] [--thread T] [--json]  # the transcript, filtered; -f follows
+power threads [--since 24h] [--json]      # threads: root ts, first line, messages, last activity, runs, contracts
+power thread <ts> [--json]                # one thread live from Slack, oldest first, with its contract/run ids
 ```
 
 Then the Kami side: `kami run show <run>` (events, vars, contracts); each step
