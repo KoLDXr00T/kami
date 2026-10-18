@@ -6,9 +6,9 @@ package state
 import (
 	"bytes"
 	"context"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -41,7 +41,26 @@ func (e *Error) Error() string { return "memento: " + e.Code + ": " + e.Message 
 // timeout bounds one memento call; a hung git or store lock surfaces as an error.
 const timeout = time.Minute
 
+// oldMementoMsg is what memento reports when memento took the "-" SQL argument literally:
+// releases before stdin support parse it as SQL and fail with this message.
+const oldMementoMsg = `near "-": syntax error`
+
+// runSQL runs `db <sub> <ns> - [extra...]` with sql on stdin. The SQL stays out
+// of memento's argv, so a worker's `pkill -f "<cmd>"` cannot match a run doc
+// that quotes that command and kill memento mid-write.
+func (m *Memento) runSQL(sub, sql string, extra ...string) (json.RawMessage, error) {
+	raw, err := m.runIn(strings.NewReader(sql), append([]string{"db", sub, m.NS, "-"}, extra...)...)
+	if e, ok := err.(*Error); ok && e.Code == "SQL_ERROR" && strings.Contains(e.Message, oldMementoMsg) {
+		return nil, fmt.Errorf("memento db %s: installed memento cannot read SQL from stdin (%s: %s); upgrade memento", sub, e.Code, e.Message)
+	}
+	return raw, err
+}
+
 func (m *Memento) run(args ...string) (json.RawMessage, error) {
+	return m.runIn(nil, args...)
+}
+
+func (m *Memento) runIn(stdin io.Reader, args ...string) (json.RawMessage, error) {
 	bin := m.Bin
 	if bin == "" {
 		bin = "memento"
@@ -52,6 +71,7 @@ func (m *Memento) run(args ...string) (json.RawMessage, error) {
 	if m.Env != nil {
 		cmd.Env = m.Env
 	}
+	cmd.Stdin = stdin
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	runErr := cmd.Run()
@@ -76,13 +96,13 @@ func (m *Memento) run(args ...string) (json.RawMessage, error) {
 
 // Exec runs one write statement (or script); msg becomes the commit message.
 func (m *Memento) Exec(sql, msg string) error {
-	_, err := m.run("db", "exec", m.NS, sql, "-m", msg)
+	_, err := m.runSQL("exec", sql, "-m", msg)
 	return err
 }
 
 // Query runs one SELECT and returns rows keyed by column.
 func (m *Memento) Query(sql string) ([]map[string]any, error) {
-	raw, err := m.run("db", "query", m.NS, sql)
+	raw, err := m.runSQL("query", sql)
 	if err != nil {
 		return nil, err
 	}
@@ -123,12 +143,9 @@ func (m *Memento) Ensure() error {
 	return m.Exec(schema, "kami: schema")
 }
 
-// Q quotes a string as an SQL literal, hex-encoded. memento db exec takes its
-// SQL only as an argument, so every value lands in memento's argv; in plain
-// text a `pkill -f "<cmd>"` run by a worker matches the run doc that quotes
-// that command and kills memento mid-write.
+// Q quotes a string as an SQL literal.
 func Q(s string) string {
-	return "CAST(X'" + hex.EncodeToString([]byte(strings.ReplaceAll(s, "\x00", ""))) + "' AS TEXT)"
+	return "'" + strings.ReplaceAll(strings.ReplaceAll(s, "\x00", ""), "'", "''") + "'"
 }
 
 func qn(s string) string {

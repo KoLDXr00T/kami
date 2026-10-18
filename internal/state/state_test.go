@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 )
@@ -98,5 +99,18 @@ func TestPayloadNotInArgv(t *testing.T) {
 	argv, _ := os.ReadFile(dir + "/argv")
 	if len(argv) == 0 || bytes.Contains(argv, []byte("sleep 4242")) {
 		t.Fatalf("payload in memento argv:\n%s", argv)
+	}
+}
+
+// A memento without stdin support parses "-" as SQL; kami must say to upgrade.
+func TestOldMementoSaysUpgrade(t *testing.T) {
+	bin := t.TempDir() + "/memento"
+	os.WriteFile(bin, []byte(`#!/bin/sh
+echo '{"ok":false,"data":null,"error":{"code":"SQL_ERROR","message":"SQL logic error: near \"-\": syntax error (1)"}}'
+exit 6
+`), 0o755)
+	m := &Memento{NS: "kami", Bin: bin}
+	if err := m.Exec("SELECT 1", "x"); err == nil || !strings.Contains(err.Error(), "upgrade memento") {
+		t.Fatalf("err = %v", err)
 	}
 }
