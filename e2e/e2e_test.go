@@ -648,6 +648,33 @@ func TestCron(t *testing.T) {
 	}
 }
 
+// A paused kekkai's cron triggers skip their fires and do not catch up on resume.
+func TestCronPaused(t *testing.T) {
+	e := newEnv(t, "cron")
+	count := func() int {
+		var runs []engine.RunBrief
+		json.Unmarshal(e.must("run", "list", "--kekkai", "cron"), &runs)
+		return len(runs)
+	}
+	e.must("kekkai", "pause", "cron")
+	before := count()
+	deadline := time.Now().Add(short)
+	for {
+		cmd := exec.Command(kamiBin, "--json", "events", "tail", "--type", "trigger.skipped", "--kekkai", "cron")
+		cmd.Env = e.vars
+		if out, _ := cmd.Output(); bytes.Contains(out, []byte("kekkai paused")) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no trigger.skipped while paused")
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	expect(t, "runs started while paused", count()-before, 0)
+	e.must("kekkai", "resume", "cron")
+	expect(t, "runs caught up on resume", count()-before, 0)
+}
+
 // count2 counts cron runs straight from memento while the daemon is down.
 func count2(e *env) int {
 	cmd := exec.Command("memento", "--json", "db", "query", "kami", "SELECT count(*) AS n FROM runs WHERE kekkai = 'cron'")

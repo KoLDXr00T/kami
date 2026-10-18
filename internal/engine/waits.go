@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -214,9 +215,16 @@ func (e *Engine) scheduleTriggersLocked() map[string]string {
 }
 
 // armTrigger fires at next, starts a run, and re-arms. Fires missed while the
-// daemon was down are skipped, not caught up.
+// daemon was down, or while the kekkai is paused, are skipped, not caught up.
 func (e *Engine) armTrigger(id, k, wf string, tr kamui.Trigger, next time.Time) {
 	e.setTimer("trigger:"+id, next, func() {
+		if p := e.pauses[k]; p != nil && !slices.Contains(p.Except, wf) {
+			e.Bus.Append(k, "", "trigger.skipped", map[string]any{"trigger": id, "cron": tr.Cron, "why": "kekkai paused"})
+			if n := tr.Sched.Next(time.Now()); !n.IsZero() {
+				e.armTrigger(id, k, wf, tr, n)
+			}
+			return
+		}
 		in := map[string]any{}
 		for key, v := range tr.Input {
 			in[key] = v

@@ -11,7 +11,7 @@ import (
 )
 
 // Pause holds a kekkai's runs: a run entering a state parks there instead (step kind
-// "paused"), probes stop, cron runs start parked. Running workers and scripts finish; open
+// "paused"), probes stop, cron triggers skip their fires (none are caught up on resume). Running workers and scripts finish; open
 // contracts stay answerable and their answer parks the next state. Workflows in Except keep
 // going (e.g. the owner's chats). Until, when set, resumes it by itself.
 type Pause struct {
