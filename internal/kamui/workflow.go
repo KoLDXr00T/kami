@@ -63,6 +63,10 @@ type Step struct {
 	// Say is a one-line milestone emitted (event run.say) when the step
 	// finishes: "" for all outcomes, or keyed by outcome.
 	Say map[string]string
+	// Heartbeat (agent, wait, spawn) runs every HeartbeatEvery while the step
+	// is in progress; its stdout becomes a run.say line.
+	Heartbeat      string
+	HeartbeatEvery time.Duration
 
 	// agent
 	Worker      string
@@ -84,6 +88,8 @@ type Step struct {
 	Timer  time.Duration
 	Probe  string
 	Every  time.Duration
+	// MaxErrors is how many probe errors in a row open a blocker (0: the default, 3)
+	MaxErrors int
 
 	// spawn
 	Workflow  string

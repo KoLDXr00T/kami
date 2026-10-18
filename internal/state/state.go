@@ -5,11 +5,14 @@ package state
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // Memento is a client for one memento namespace.
@@ -35,18 +38,46 @@ type Error struct {
 
 func (e *Error) Error() string { return "memento: " + e.Code + ": " + e.Message }
 
+// timeout bounds one memento call; a hung git or store lock surfaces as an error.
+const timeout = time.Minute
+
+// oldMementoMsg is what memento reports when memento took the "-" SQL argument literally:
+// releases before stdin support parse it as SQL and fail with this message.
+const oldMementoMsg = `near "-": syntax error`
+
+// runSQL runs `db <sub> <ns> - [extra...]` with sql on stdin. The SQL stays out
+// of memento's argv, so a worker's `pkill -f "<cmd>"` cannot match a run doc
+// that quotes that command and kill memento mid-write.
+func (m *Memento) runSQL(sub, sql string, extra ...string) (json.RawMessage, error) {
+	raw, err := m.runIn(strings.NewReader(sql), append([]string{"db", sub, m.NS, "-"}, extra...)...)
+	if e, ok := err.(*Error); ok && e.Code == "SQL_ERROR" && strings.Contains(e.Message, oldMementoMsg) {
+		return nil, fmt.Errorf("memento db %s: installed memento cannot read SQL from stdin (%s: %s); upgrade memento", sub, e.Code, e.Message)
+	}
+	return raw, err
+}
+
 func (m *Memento) run(args ...string) (json.RawMessage, error) {
+	return m.runIn(nil, args...)
+}
+
+func (m *Memento) runIn(stdin io.Reader, args ...string) (json.RawMessage, error) {
 	bin := m.Bin
 	if bin == "" {
 		bin = "memento"
 	}
-	cmd := exec.Command(bin, append([]string{"--json"}, args...)...)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, append([]string{"--json"}, args...)...)
 	if m.Env != nil {
 		cmd.Env = m.Env
 	}
+	cmd.Stdin = stdin
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	runErr := cmd.Run()
+	if ctx.Err() != nil {
+		return nil, fmt.Errorf("memento %s: timed out after %v", args[0], timeout)
+	}
 	var env envelope
 	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
 		if runErr != nil {
@@ -65,13 +96,13 @@ func (m *Memento) run(args ...string) (json.RawMessage, error) {
 
 // Exec runs one write statement (or script); msg becomes the commit message.
 func (m *Memento) Exec(sql, msg string) error {
-	_, err := m.run("db", "exec", m.NS, sql, "-m", msg)
+	_, err := m.runSQL("exec", sql, "-m", msg)
 	return err
 }
 
 // Query runs one SELECT and returns rows keyed by column.
 func (m *Memento) Query(sql string) ([]map[string]any, error) {
-	raw, err := m.run("db", "query", m.NS, sql)
+	raw, err := m.runSQL("query", sql)
 	if err != nil {
 		return nil, err
 	}

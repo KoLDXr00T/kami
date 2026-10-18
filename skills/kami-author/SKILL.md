@@ -74,8 +74,9 @@ state("stopped", cancel())
 |---|---|---|
 | `agent(worker, instruction, skills=, inputs=, cwd=, timeout=1h, resume=)` | a worker; `worker` may be a function of vars | the worker's `kami step done --outcome` |
 | `script(cmd, inputs=, cwd=, timeout=10m)` | a command, no shell, no LLM | last stdout line `{"outcome": "...", "vars": {...}}`; without JSON: `ok` on exit 0, `error` otherwise; `timeout` if killed |
-| `wait(signal=, key=, timer=, probe=, every=, timeout=)` | sleeps; a probe script runs every `every` | `signal`, `timer`, `timeout`, or the probe's first outcome other than `pending` |
+| `wait(signal=, key=, timer=, probe=, every=, timeout=, max_errors=3)` | sleeps; a probe script runs every `every` | `signal`, `timer`, `timeout`, or the probe's first outcome other than `pending` |
 | `spawn(workflow, for_each, input=)` | one child run per item of a list var (or `fn(vars)`); `input(item, vars)` builds its inputs (default `{"item": item}`) | `all_done` / `any_failed`; `vars.children[i]` = `{run_id, status, outcome, report, vars}` |
+| `heartbeat(cmd, every=)` | not a step: pass it as `heartbeat=` to `agent`, `wait` or `spawn`. `cmd` runs every `every` while the step is in progress | its trimmed stdout, if not empty, is posted as a `run.say` line |
 | `choose(fn)` | `fn(vars)` returns the next state name | — |
 | `done(report)`, `fail(report)`, `cancel(report)` | ends the run | the terminal state's name is the run's outcome |
 
@@ -115,8 +116,21 @@ want (`state("mood", ask(...))` → `vars["mood"]`).
 - `cwd=` must resolve under a `cwd_roots` entry, checked at validation for
   literals and at run time for templates.
 - `pending` is reserved for probes. A probe returning `pending` writes
-  nothing to memento, so polling for hours is free.
+  nothing to memento, so polling for hours is free. `{"outcome": "pending",
+  "say": "CI 3/5 green"}` posts the say as a `run.say` line, only when it
+  differs from that probe's last say.
 - Every `wait` on a signal or probe needs `timeout=` and a `timeout` outcome.
+- A probe that exits `error` (non-zero, no JSON) is retried with backoff
+  (after `every`, then 2×, 4×, up to 8×); `max_errors` errors in a row
+  (default 3) open a retry/stop blocker. `pending` resets the count. Map
+  `error` to a state to handle it yourself.
+- `heartbeat = heartbeat("scripts/chat-status {pr}", every = "30m")` on a
+  long `agent`, `wait` or `spawn` posts the script's stdout (the `run.say`
+  line Slack shows in the run's thread) every 30 minutes. It resolves, renders
+  and gets stdin/env like a script (same `inputs=` and `cwd=` as the step), is
+  killed after 2m, and a failure only logs `heartbeat.failed`. It stops when
+  the step ends or blocks, skips beats while the kekkai is paused, and after a
+  daemon restart beats again `every` after recovery. Print nothing to skip a beat.
 - Scripts re-run after a daemon crash: make them check-first (did the ticket
   already get filed?) before mutating anything.
 

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -116,8 +117,16 @@ func (e *Engine) probeExited(id, tok string, res procResult) {
 	}
 	r.Step.probing, r.Step.Token = false, ""
 	out, vars := scriptOutcome(res)
-	every := e.def(r).States[r.State].Step.Every
+	s := e.def(r).States[r.State].Step
+	every := s.Every
 	if out == "pending" {
+		r.Step.errors = 0
+		if m, _ := lastJSON(res.Stdout); m != nil { // {"outcome": "pending", "say": "..."}: a status line, posted when it changes
+			if say, _ := m["say"].(string); strings.TrimSpace(say) != "" && say != r.Step.lastSay {
+				r.Step.lastSay = say
+				e.event(r, "run.say", map[string]any{"state": r.State, "outcome": out, "text": strings.TrimSpace(say)})
+			}
+		}
 		t := now().Add(every)
 		r.Step.probeAt = &t
 		e.scheduleRun(r) // no memento write: waiting costs nothing
@@ -125,10 +134,18 @@ func (e *Engine) probeExited(id, tok string, res procResult) {
 	}
 	e.event(r, "probe.result", map[string]any{"state": r.State, "outcome": out, "exit": res.Exit, "stderr": tail(res.Stderr, 400)})
 	if _, ok := e.def(r).States[r.State].Outcomes[out]; !ok || out == "timeout" || out == "timer" || out == "signal" {
-		e.event(r, "probe.unmapped", map[string]any{"state": r.State, "outcome": out})
+		limit := s.MaxErrors
+		if limit == 0 {
+			limit = 3
+		}
+		if out == "error" { // likely transient (a 5xx, a DNS blip): back off, and block only when it keeps failing
+			r.Step.errors++
+			every <<= min(r.Step.errors-1, 3)
+		}
+		e.event(r, "probe.unmapped", map[string]any{"state": r.State, "outcome": out, "errors": r.Step.errors})
 		t := now().Add(every)
 		r.Step.probeAt = &t
-		if out == "error" {
+		if out == "error" && r.Step.errors >= limit {
 			e.block(r, "stuck", fmt.Sprintf("%s: the probe failed (exit %d)", r.State, res.Exit),
 				failureBody(res, filepath.Join(e.runDir(r), r.State+".probe")), []string{"retry", "stop"})
 			return
@@ -139,6 +156,83 @@ func (e *Engine) probeExited(id, tok string, res procResult) {
 	e.stopTimer("run:" + r.ID)
 	r.Step.Phase = "done"
 	e.outcome(r, out, vars)
+}
+
+// --- heartbeats --------------------------------------------------------------------
+
+// armHeartbeat (re)starts the heartbeat of r's current step, or stops the last
+// one. It beats every HeartbeatEvery while r stays in this visit of the state
+// with that step in progress (a blocker or a pause ends it); a restart arms it
+// again from recovery.
+func (e *Engine) armHeartbeat(r *Run) {
+	e.stopTimer("hb:" + r.ID)
+	st := e.def(r).States[r.State]
+	if st == nil {
+		return
+	}
+	s := st.Step
+	if s.Heartbeat == "" || r.Step == nil || r.Step.Kind != s.Kind {
+		return
+	}
+	id, state, visit := r.ID, r.State, r.Visits[r.State]
+	var beat func()
+	beat = func() {
+		r := e.runs[id]
+		if r == nil || Terminal(r.Status) || r.State != state || r.Visits[state] != visit || r.Step == nil || r.Step.Kind != s.Kind {
+			return
+		}
+		e.setTimer("hb:"+id, now().Add(s.HeartbeatEvery), beat)
+		if !e.held(r) && !r.Step.beating {
+			e.runHeartbeat(r, s)
+		}
+	}
+	e.setTimer("hb:"+id, now().Add(s.HeartbeatEvery), beat)
+}
+
+// runHeartbeat runs the heartbeat script; its trimmed stdout, when not empty,
+// becomes a run.say line. A failure is logged and never touches the step.
+func (e *Engine) runHeartbeat(r *Run, s *kamui.Step) {
+	state, visit := r.State, r.Visits[r.State]
+	fail := func(data map[string]any) {
+		data["state"] = state
+		e.event(r, "heartbeat.failed", data)
+	}
+	k, err := kekkai.Load(e.Home, r.Kekkai)
+	if err != nil {
+		fail(map[string]any{"error": err.Error()})
+		return
+	}
+	dir := filepath.Join(e.runDir(r), state+".heartbeat")
+	os.MkdirAll(dir, 0o700)
+	spec, err := e.scriptSpec(r, s, s.Heartbeat, k, dir)
+	if err != nil {
+		fail(map[string]any{"error": err.Error()})
+		return
+	}
+	// ponytail: fixed 2m cap so a hung status script cannot pile up; make it a heartbeat() arg if one needs longer
+	spec.LogDir, spec.Timeout = "", 2*time.Minute
+	r.Step.beating = true
+	id := r.ID
+	_, err = startProc(spec, "", func(res procResult) {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		r := e.runs[id]
+		if e.closed || r == nil || Terminal(r.Status) || r.State != state || r.Visits[state] != visit || r.Step == nil {
+			return // the step ended meanwhile: its status is stale
+		}
+		r.Step.beating = false
+		if res.TimedOut || res.Exit != 0 || res.Err != nil {
+			fail(map[string]any{"exit": res.Exit, "timed_out": res.TimedOut, "stderr": tail(res.Stderr, 400)})
+			return
+		}
+		if text := strings.TrimSpace(string(res.Stdout)); text != "" {
+			e.event(r, "run.say", map[string]any{"state": state, "text": text, "heartbeat": true})
+		}
+	})
+	if err != nil {
+		r.Step.beating = false
+		fail(map[string]any{"error": err.Error()})
+	}
 }
 
 // Publish delivers a signal to every run waiting on it in the kekkai.
@@ -214,9 +308,16 @@ func (e *Engine) scheduleTriggersLocked() map[string]string {
 }
 
 // armTrigger fires at next, starts a run, and re-arms. Fires missed while the
-// daemon was down are skipped, not caught up.
+// daemon was down, or while the kekkai is paused, are skipped, not caught up.
 func (e *Engine) armTrigger(id, k, wf string, tr kamui.Trigger, next time.Time) {
 	e.setTimer("trigger:"+id, next, func() {
+		if p := e.pauses[k]; p != nil && !slices.Contains(p.Except, wf) {
+			e.Bus.Append(k, "", "trigger.skipped", map[string]any{"trigger": id, "cron": tr.Cron, "why": "kekkai paused"})
+			if n := tr.Sched.Next(time.Now()); !n.IsZero() {
+				e.armTrigger(id, k, wf, tr, n)
+			}
+			return
+		}
 		in := map[string]any{}
 		for key, v := range tr.Input {
 			in[key] = v

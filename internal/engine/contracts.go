@@ -3,8 +3,11 @@ package engine
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"time"
 
@@ -47,12 +50,29 @@ func (e *Engine) openStateContract(r *Run, st *kamui.State) {
 	if c.Resolver == "" && w.AFK != nil && !c.Lock {
 		c.Resolver = w.AFK.Resolver
 	}
+	// an upgraded run re-entering its state keeps the question it already asks, unchanged
+	for _, old := range e.contracts {
+		if old.RunID == r.ID && old.Status == "open" && sameQuestion(old, c) {
+			r.Step.Contract, r.Step.Phase, r.Status = old.ID, "waiting", StWaiting
+			e.saveRun(r, "still waiting on "+old.ID)
+			e.event(r, "contract.kept", map[string]any{"id": old.ID})
+			e.applyMode(old, false)
+			return
+		}
+	}
 	e.contracts[c.ID] = c
 	e.saveContract(c, "opened")
 	r.Step.Contract, r.Step.Phase, r.Status = c.ID, "waiting", StWaiting
 	e.saveRun(r, "waiting on "+c.ID)
 	e.event(r, "contract.opened", contractEvent(c))
 	e.applyMode(c, true)
+}
+
+// sameQuestion: b would ask what a asks, and be answered the same way.
+func sameQuestion(a, b *Contract) bool {
+	return a.Origin == b.Origin && a.Step == b.Step && a.Kind == b.Kind && a.Title == b.Title && a.Body == b.Body &&
+		slices.Equal(a.Options, b.Options) && maps.Equal(a.Fields, b.Fields) && a.Default == b.Default &&
+		a.Lock == b.Lock && a.Resolver == b.Resolver && reflect.DeepEqual(a.Mode, b.Mode)
 }
 
 func (e *Engine) readBodyFile(r *Run, tmpl string) (string, error) {

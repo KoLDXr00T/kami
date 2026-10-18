@@ -191,6 +191,7 @@ func (e *Engine) recover(r *Run) {
 		return
 	}
 	e.event(r, "run.recovered", map[string]any{"state": r.State, "kind": st.Kind, "phase": st.Phase})
+	e.armHeartbeat(r)
 	switch st.Kind {
 	case kamui.KAgent:
 		if st.Phase == "sleeping" {
@@ -396,6 +397,7 @@ func (e *Engine) enter(r *Run, name string) {
 	s := st.Step
 	r.Step = &StepState{Kind: s.Kind}
 	e.event(r, "state.entered", map[string]any{"state": name, "kind": s.Kind, "visit": r.Visits[name]})
+	e.armHeartbeat(r)
 	switch {
 	case s.Kind == kamui.KAgent:
 		e.startAgent(r, nil)
@@ -480,10 +482,11 @@ func (e *Engine) finish(r *Run, status, report string) {
 		return
 	}
 	e.stopTimer("run:" + r.ID)
+	e.stopTimer("hb:" + r.ID)
 	if p := e.procs[r.ID]; p != nil {
 		p.kill()
 	}
-	e.cancelContracts(r, "run finished")
+	e.cancelContracts(r, "run finished", "")
 	r.Status, r.Report, r.Outcome = status, report, r.State
 	if r.Step != nil {
 		r.Step.Phase, r.Step.Token = "done", ""
@@ -497,9 +500,10 @@ func (e *Engine) finish(r *Run, status, report string) {
 	}
 }
 
-func (e *Engine) cancelContracts(r *Run, why string) {
+// cancelContracts withdraws r's open contracts, except keep.
+func (e *Engine) cancelContracts(r *Run, why, keep string) {
 	for _, c := range e.contracts {
-		if c.RunID == r.ID && c.Status == "open" {
+		if c.RunID == r.ID && c.Status == "open" && c.ID != keep {
 			c.Status = "cancelled"
 			e.stopTimer("contract:" + c.ID)
 			e.saveContract(c, "cancelled: "+why)
@@ -511,7 +515,8 @@ func (e *Engine) cancelContracts(r *Run, why string) {
 // Upgrade moves a parked run onto its workflow's current definition and enters
 // state (its current one when empty): runs stay pinned to the definition they
 // started with, so a fix to a workflow otherwise only reaches new runs. Its open
-// contracts are withdrawn. A run with a process or children still running is refused.
+// contracts are withdrawn, except one the state asks again unchanged (openStateContract
+// keeps it). A run with a process or children still running is refused.
 func (e *Engine) Upgrade(id, state string, vars map[string]any) (*Run, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -543,7 +548,6 @@ func (e *Engine) Upgrade(id, state string, vars map[string]any) (*Run, error) {
 		e.defs[w.Hash] = w
 	}
 	e.stopTimer("run:" + r.ID)
-	e.cancelContracts(r, "run upgraded")
 	e.event(r, "run.upgraded", map[string]any{"from": r.DefHash, "to": w.Hash, "state": state})
 	for k, v := range vars { // kami_* stay what the run's inputs made them, as in outcome
 		if k != "visits" && !strings.HasPrefix(k, "kami_") {
@@ -552,6 +556,11 @@ func (e *Engine) Upgrade(id, state string, vars map[string]any) (*Run, error) {
 	}
 	r.DefHash, r.Step, r.Status = w.Hash, nil, StRunning
 	e.enter(r, state)
+	keep := ""
+	if r.Step != nil {
+		keep = r.Step.Contract
+	}
+	e.cancelContracts(r, "run upgraded", keep)
 	return r, nil
 }
 

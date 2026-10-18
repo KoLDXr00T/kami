@@ -534,6 +534,24 @@ func TestProbeWait(t *testing.T) {
 	expect(t, "memento commits in state poll", commits, 2)
 }
 
+// A probe that errors is retried with backoff; only max_errors (default 3) errors in a
+// row open a blocker.
+func TestProbeErrors(t *testing.T) {
+	e := newEnv(t)
+	id := e.start_("probe-flaky", "--input", "errors=2", "--input", "strict=false")
+	v := e.waitStatus(id, "done", short)
+	if len(v.Contracts) != 0 {
+		t.Fatalf("two errors opened a blocker; events: %s", eventTypes(v))
+	}
+	id = e.start_("probe-flaky", "--input", "errors=2", "--input", "strict=true")
+	c := e.openContract(id, short)
+	if !strings.Contains(c.Title, "the probe failed") || !strings.Contains(c.Body, "upstream 503") {
+		t.Fatalf("contract = %q / %q", c.Title, c.Body)
+	}
+	e.must("contract", "resolve", c.ID, "retry")
+	expect(t, "report after retry", e.waitStatus(id, "done", short).Report, "ready")
+}
+
 // --- 13. inputs allowlist ---------------------------------------------------------------
 
 func TestInputsScope(t *testing.T) {
@@ -648,6 +666,33 @@ func TestCron(t *testing.T) {
 	}
 }
 
+// A paused kekkai's cron triggers skip their fires and do not catch up on resume.
+func TestCronPaused(t *testing.T) {
+	e := newEnv(t, "cron")
+	count := func() int {
+		var runs []engine.RunBrief
+		json.Unmarshal(e.must("run", "list", "--kekkai", "cron"), &runs)
+		return len(runs)
+	}
+	e.must("kekkai", "pause", "cron")
+	before := count()
+	deadline := time.Now().Add(short)
+	for {
+		cmd := exec.Command(kamiBin, "--json", "events", "tail", "--type", "trigger.skipped", "--kekkai", "cron")
+		cmd.Env = e.vars
+		if out, _ := cmd.Output(); bytes.Contains(out, []byte("kekkai paused")) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no trigger.skipped while paused")
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	expect(t, "runs started while paused", count()-before, 0)
+	e.must("kekkai", "resume", "cron")
+	expect(t, "runs caught up on resume", count()-before, 0)
+}
+
 // count2 counts cron runs straight from memento while the daemon is down.
 func count2(e *env) int {
 	cmd := exec.Command("memento", "--json", "db", "query", "kami", "SELECT count(*) AS n FROM runs WHERE kekkai = 'cron'")
@@ -679,6 +724,21 @@ func TestSessionLoop(t *testing.T) {
 	expect(t, "woken run resumes the old session", v.Vars["resumed_from"], "sess-1")
 }
 
+// worker.exited carries what claude's JSON result says the attempt cost
+func TestWorkerCost(t *testing.T) {
+	e := newEnv(t)
+	id := e.start_("chat-loop", "--input", "thread=t1", "--input", "text=hi")
+	v := e.waitRun(id, short, "first answer", func(v runView) bool { return v.State == "listen" })
+	for _, ev := range v.Events {
+		if ev["type"] == "worker.exited" {
+			d := ev["data"].(map[string]any)
+			expect(t, "cost", fmt.Sprint(d["session_cost_usd"], " ", d["output_tokens"], " ", d["duration_ms"], " ", d["session"]), "0.25 7 1200 sess-1")
+			return
+		}
+	}
+	t.Fatalf("no worker.exited; events: %s", eventTypes(v))
+}
+
 // --- say= milestones ------------------------------------------------------------------
 
 func TestSay(t *testing.T) {
@@ -694,6 +754,39 @@ func TestSay(t *testing.T) {
 		}
 	}
 	expect(t, "milestones", strings.Join(said, " | "), "shipping today | worked: ok")
+}
+
+// A pending probe's say becomes run.say, only when it differs from the last one.
+func TestProbeSay(t *testing.T) {
+	e := newEnv(t)
+	id := e.start_("probe-say")
+	expect(t, "said", strings.Join(said(e.waitStatus(id, "done", short)), " | "), "building | testing")
+}
+
+// A heartbeat posts its trimmed stdout as run.say while the step runs, logs a
+// failing beat without failing the step, and stops when the step ends.
+func TestHeartbeat(t *testing.T) {
+	e := newEnv(t)
+	id := e.start_("heartbeat", "--input", "word=hi")
+	v := e.waitStatus(id, "done", short)
+	got := said(v)
+	if len(got) < 2 || got[0] != "beat hi 1" || got[1] != "beat hi 3" || !hasEvent(v, "heartbeat.failed") {
+		t.Fatalf("said %q; events: %s", got, eventTypes(v))
+	}
+	time.Sleep(time.Second)
+	if n := len(said(e.show(id))); n != len(got) {
+		t.Fatalf("beats went on after the step ended: %d, then %d", len(got), n)
+	}
+}
+
+func said(v runView) []string {
+	var out []string
+	for _, ev := range v.Events {
+		if ev["type"] == "run.say" {
+			out = append(out, fmt.Sprint(ev["data"].(map[string]any)["text"]))
+		}
+	}
+	return out
 }
 
 // --- a worker that never reports --------------------------------------------------------------
@@ -861,6 +954,29 @@ func TestUpgrade(t *testing.T) {
 		t.Fatalf("events: %s", eventTypes(v))
 	}
 	e.refused(5, "already", "run", "upgrade", id)
+}
+
+// An upgrade that re-enters a state asking the same question keeps the open contract;
+// a changed question replaces it.
+func TestUpgradeKeepsQuestion(t *testing.T) {
+	e := newEnv(t)
+	id := e.start_("gate")
+	c := e.openContract(id, short)
+	e.must("run", "upgrade", id)
+	v := e.show(id)
+	if hasEvent(v, "contract.cancelled") || !hasEvent(v, "contract.kept") || len(v.Contracts) != 1 || v.Step.Contract != c.ID {
+		t.Fatalf("contracts %d, step contract %s (was %s), events: %s", len(v.Contracts), v.Step.Contract, c.ID, eventTypes(v))
+	}
+	wf := filepath.Join(e.home, "kekkai", "test", "workflows", "gate.star")
+	raw, _ := os.ReadFile(wf)
+	os.WriteFile(wf, bytes.Replace(raw, []byte(`"Ship it?"`), []byte(`"Ship it now?"`), 1), 0o600)
+	e.must("run", "upgrade", id)
+	v = e.show(id)
+	if !hasEvent(v, "contract.cancelled") || v.Step.Contract == c.ID {
+		t.Fatalf("a changed question was not re-asked; events: %s", eventTypes(v))
+	}
+	e.must("contract", "resolve", v.Step.Contract, "ship")
+	expect(t, "report", e.waitStatus(id, "done", short).Report, "shipped")
 }
 
 // --- pause: a paused kekkai parks runs (across a restart) until resume -------------------

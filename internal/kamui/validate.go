@@ -173,7 +173,7 @@ func checkKekkai(w *Workflow, st *State, k *kekkai.Kekkai) []string {
 			add("%v", err)
 		}
 	}
-	for _, c := range []string{s.Cmd, s.Probe, s.Resolver} {
+	for _, c := range []string{s.Cmd, s.Probe, s.Resolver, s.Heartbeat} {
 		if c == "" {
 			continue
 		}
