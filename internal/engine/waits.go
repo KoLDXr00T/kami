@@ -117,8 +117,10 @@ func (e *Engine) probeExited(id, tok string, res procResult) {
 	}
 	r.Step.probing, r.Step.Token = false, ""
 	out, vars := scriptOutcome(res)
-	every := e.def(r).States[r.State].Step.Every
+	s := e.def(r).States[r.State].Step
+	every := s.Every
 	if out == "pending" {
+		r.Step.errors = 0
 		t := now().Add(every)
 		r.Step.probeAt = &t
 		e.scheduleRun(r) // no memento write: waiting costs nothing
@@ -126,10 +128,18 @@ func (e *Engine) probeExited(id, tok string, res procResult) {
 	}
 	e.event(r, "probe.result", map[string]any{"state": r.State, "outcome": out, "exit": res.Exit, "stderr": tail(res.Stderr, 400)})
 	if _, ok := e.def(r).States[r.State].Outcomes[out]; !ok || out == "timeout" || out == "timer" || out == "signal" {
-		e.event(r, "probe.unmapped", map[string]any{"state": r.State, "outcome": out})
+		limit := s.MaxErrors
+		if limit == 0 {
+			limit = 3
+		}
+		if out == "error" { // likely transient (a 5xx, a DNS blip): back off, and block only when it keeps failing
+			r.Step.errors++
+			every <<= min(r.Step.errors-1, 3)
+		}
+		e.event(r, "probe.unmapped", map[string]any{"state": r.State, "outcome": out, "errors": r.Step.errors})
 		t := now().Add(every)
 		r.Step.probeAt = &t
-		if out == "error" {
+		if out == "error" && r.Step.errors >= limit {
 			e.block(r, "stuck", fmt.Sprintf("%s: the probe failed (exit %d)", r.State, res.Exit),
 				failureBody(res, filepath.Join(e.runDir(r), r.State+".probe")), []string{"retry", "stop"})
 			return

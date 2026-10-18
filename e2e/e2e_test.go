@@ -534,6 +534,24 @@ func TestProbeWait(t *testing.T) {
 	expect(t, "memento commits in state poll", commits, 2)
 }
 
+// A probe that errors is retried with backoff; only max_errors (default 3) errors in a
+// row open a blocker.
+func TestProbeErrors(t *testing.T) {
+	e := newEnv(t)
+	id := e.start_("probe-flaky", "--input", "errors=2", "--input", "strict=false")
+	v := e.waitStatus(id, "done", short)
+	if len(v.Contracts) != 0 {
+		t.Fatalf("two errors opened a blocker; events: %s", eventTypes(v))
+	}
+	id = e.start_("probe-flaky", "--input", "errors=2", "--input", "strict=true")
+	c := e.openContract(id, short)
+	if !strings.Contains(c.Title, "the probe failed") || !strings.Contains(c.Body, "upstream 503") {
+		t.Fatalf("contract = %q / %q", c.Title, c.Body)
+	}
+	e.must("contract", "resolve", c.ID, "retry")
+	expect(t, "report after retry", e.waitStatus(id, "done", short).Report, "ready")
+}
+
 // --- 13. inputs allowlist ---------------------------------------------------------------
 
 func TestInputsScope(t *testing.T) {

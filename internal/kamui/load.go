@@ -405,12 +405,14 @@ func bScript(t *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kw [
 
 func bWait(t *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kw []starlark.Tuple) (starlark.Value, error) {
 	var signal, key, timer, probe, every, timeout, cwd, say starlark.Value
-	maxVisits := 0
+	maxVisits, maxErrors := 0, 0
 	if err := starlark.UnpackArgs("wait", args, kw, "signal?", &signal, "key?", &key, "timer?", &timer,
-		"probe?", &probe, "every?", &every, "timeout?", &timeout, "cwd?", &cwd, "max_visits?", &maxVisits, "say?", &say); err != nil {
+		"probe?", &probe, "every?", &every, "timeout?", &timeout, "cwd?", &cwd, "max_visits?", &maxVisits, "say?", &say,
+		"max_errors?", &maxErrors); err != nil {
 		return nil, err
 	}
-	s := &Step{Kind: KWait, Signal: optStr(signal), Key: optStr(key), Probe: optStr(probe), Cwd: optStr(cwd), MaxVisits: maxVisits}
+	s := &Step{Kind: KWait, Signal: optStr(signal), Key: optStr(key), Probe: optStr(probe), Cwd: optStr(cwd), MaxVisits: maxVisits,
+		MaxErrors: maxErrors}
 	var err error
 	if s.Timer, err = dur("wait", "timer", timer); err != nil {
 		return nil, err
@@ -423,6 +425,9 @@ func bWait(t *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kw []s
 	}
 	if s.Signal == "" && s.Timer == 0 && s.Probe == "" {
 		return nil, fmt.Errorf("wait: needs signal=, timer= or probe=")
+	}
+	if maxErrors < 0 || (maxErrors > 0 && s.Probe == "") {
+		return nil, fmt.Errorf("wait: max_errors= needs probe= and a count of at least 1")
 	}
 	if s.Probe != "" {
 		if s.Every == 0 {

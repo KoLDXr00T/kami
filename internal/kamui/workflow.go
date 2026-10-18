@@ -84,6 +84,8 @@ type Step struct {
 	Timer  time.Duration
 	Probe  string
 	Every  time.Duration
+	// MaxErrors is how many probe errors in a row open a blocker (0: the default, 3)
+	MaxErrors int
 
 	// spawn
 	Workflow  string
