@@ -756,6 +756,23 @@ func TestSay(t *testing.T) {
 	expect(t, "milestones", strings.Join(said, " | "), "shipping today | worked: ok")
 }
 
+// A pending probe's say becomes run.say, only when it differs from the last one.
+func TestProbeSay(t *testing.T) {
+	e := newEnv(t)
+	id := e.start_("probe-say")
+	expect(t, "said", strings.Join(said(e.waitStatus(id, "done", short)), " | "), "building | testing")
+}
+
+func said(v runView) []string {
+	var out []string
+	for _, ev := range v.Events {
+		if ev["type"] == "run.say" {
+			out = append(out, fmt.Sprint(ev["data"].(map[string]any)["text"]))
+		}
+	}
+	return out
+}
+
 // --- a worker that never reports --------------------------------------------------------------
 
 func TestSilentWorker(t *testing.T) {

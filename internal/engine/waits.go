@@ -121,6 +121,12 @@ func (e *Engine) probeExited(id, tok string, res procResult) {
 	every := s.Every
 	if out == "pending" {
 		r.Step.errors = 0
+		if m, _ := lastJSON(res.Stdout); m != nil { // {"outcome": "pending", "say": "..."}: a status line, posted when it changes
+			if say, _ := m["say"].(string); strings.TrimSpace(say) != "" && say != r.Step.lastSay {
+				r.Step.lastSay = say
+				e.event(r, "run.say", map[string]any{"state": r.State, "outcome": out, "text": strings.TrimSpace(say)})
+			}
+		}
 		t := now().Add(every)
 		r.Step.probeAt = &t
 		e.scheduleRun(r) // no memento write: waiting costs nothing

@@ -115,7 +115,9 @@ want (`state("mood", ask(...))` → `vars["mood"]`).
 - `cwd=` must resolve under a `cwd_roots` entry, checked at validation for
   literals and at run time for templates.
 - `pending` is reserved for probes. A probe returning `pending` writes
-  nothing to memento, so polling for hours is free.
+  nothing to memento, so polling for hours is free. `{"outcome": "pending",
+  "say": "CI 3/5 green"}` posts the say as a `run.say` line, only when it
+  differs from that probe's last say.
 - Every `wait` on a signal or probe needs `timeout=` and a `timeout` outcome.
 - A probe that exits `error` (non-zero, no JSON) is retried with backoff
   (after `every`, then 2×, 4×, up to 8×); `max_errors` errors in a row
