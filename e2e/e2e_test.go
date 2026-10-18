@@ -863,6 +863,29 @@ func TestUpgrade(t *testing.T) {
 	e.refused(5, "already", "run", "upgrade", id)
 }
 
+// An upgrade that re-enters a state asking the same question keeps the open contract;
+// a changed question replaces it.
+func TestUpgradeKeepsQuestion(t *testing.T) {
+	e := newEnv(t)
+	id := e.start_("gate")
+	c := e.openContract(id, short)
+	e.must("run", "upgrade", id)
+	v := e.show(id)
+	if hasEvent(v, "contract.cancelled") || !hasEvent(v, "contract.kept") || len(v.Contracts) != 1 || v.Step.Contract != c.ID {
+		t.Fatalf("contracts %d, step contract %s (was %s), events: %s", len(v.Contracts), v.Step.Contract, c.ID, eventTypes(v))
+	}
+	wf := filepath.Join(e.home, "kekkai", "test", "workflows", "gate.star")
+	raw, _ := os.ReadFile(wf)
+	os.WriteFile(wf, bytes.Replace(raw, []byte(`"Ship it?"`), []byte(`"Ship it now?"`), 1), 0o600)
+	e.must("run", "upgrade", id)
+	v = e.show(id)
+	if !hasEvent(v, "contract.cancelled") || v.Step.Contract == c.ID {
+		t.Fatalf("a changed question was not re-asked; events: %s", eventTypes(v))
+	}
+	e.must("contract", "resolve", v.Step.Contract, "ship")
+	expect(t, "report", e.waitStatus(id, "done", short).Report, "shipped")
+}
+
 // --- pause: a paused kekkai parks runs (across a restart) until resume -------------------
 
 func TestPause(t *testing.T) {
