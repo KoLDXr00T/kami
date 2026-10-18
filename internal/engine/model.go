@@ -68,6 +68,7 @@ type StepState struct {
 	probing bool
 	errors  int    // probe errors in a row; in memory only
 	lastSay string // the probe's last say; in memory only, so a restart may repeat it once
+	beating bool   // a heartbeat script is running
 }
 
 type pending struct {

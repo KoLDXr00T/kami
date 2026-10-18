@@ -763,6 +763,22 @@ func TestProbeSay(t *testing.T) {
 	expect(t, "said", strings.Join(said(e.waitStatus(id, "done", short)), " | "), "building | testing")
 }
 
+// A heartbeat posts its trimmed stdout as run.say while the step runs, logs a
+// failing beat without failing the step, and stops when the step ends.
+func TestHeartbeat(t *testing.T) {
+	e := newEnv(t)
+	id := e.start_("heartbeat", "--input", "word=hi")
+	v := e.waitStatus(id, "done", short)
+	got := said(v)
+	if len(got) < 2 || got[0] != "beat hi 1" || got[1] != "beat hi 3" || !hasEvent(v, "heartbeat.failed") {
+		t.Fatalf("said %q; events: %s", got, eventTypes(v))
+	}
+	time.Sleep(time.Second)
+	if n := len(said(e.show(id))); n != len(got) {
+		t.Fatalf("beats went on after the step ended: %d, then %d", len(got), n)
+	}
+}
+
 func said(v runView) []string {
 	var out []string
 	for _, ev := range v.Events {

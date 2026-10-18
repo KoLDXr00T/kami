@@ -191,6 +191,7 @@ func (e *Engine) recover(r *Run) {
 		return
 	}
 	e.event(r, "run.recovered", map[string]any{"state": r.State, "kind": st.Kind, "phase": st.Phase})
+	e.armHeartbeat(r)
 	switch st.Kind {
 	case kamui.KAgent:
 		if st.Phase == "sleeping" {
@@ -396,6 +397,7 @@ func (e *Engine) enter(r *Run, name string) {
 	s := st.Step
 	r.Step = &StepState{Kind: s.Kind}
 	e.event(r, "state.entered", map[string]any{"state": name, "kind": s.Kind, "visit": r.Visits[name]})
+	e.armHeartbeat(r)
 	switch {
 	case s.Kind == kamui.KAgent:
 		e.startAgent(r, nil)
@@ -480,6 +482,7 @@ func (e *Engine) finish(r *Run, status, report string) {
 		return
 	}
 	e.stopTimer("run:" + r.ID)
+	e.stopTimer("hb:" + r.ID)
 	if p := e.procs[r.ID]; p != nil {
 		p.kill()
 	}

@@ -158,6 +158,83 @@ func (e *Engine) probeExited(id, tok string, res procResult) {
 	e.outcome(r, out, vars)
 }
 
+// --- heartbeats --------------------------------------------------------------------
+
+// armHeartbeat (re)starts the heartbeat of r's current step, or stops the last
+// one. It beats every HeartbeatEvery while r stays in this visit of the state
+// with that step in progress (a blocker or a pause ends it); a restart arms it
+// again from recovery.
+func (e *Engine) armHeartbeat(r *Run) {
+	e.stopTimer("hb:" + r.ID)
+	st := e.def(r).States[r.State]
+	if st == nil {
+		return
+	}
+	s := st.Step
+	if s.Heartbeat == "" || r.Step == nil || r.Step.Kind != s.Kind {
+		return
+	}
+	id, state, visit := r.ID, r.State, r.Visits[r.State]
+	var beat func()
+	beat = func() {
+		r := e.runs[id]
+		if r == nil || Terminal(r.Status) || r.State != state || r.Visits[state] != visit || r.Step == nil || r.Step.Kind != s.Kind {
+			return
+		}
+		e.setTimer("hb:"+id, now().Add(s.HeartbeatEvery), beat)
+		if !e.held(r) && !r.Step.beating {
+			e.runHeartbeat(r, s)
+		}
+	}
+	e.setTimer("hb:"+id, now().Add(s.HeartbeatEvery), beat)
+}
+
+// runHeartbeat runs the heartbeat script; its trimmed stdout, when not empty,
+// becomes a run.say line. A failure is logged and never touches the step.
+func (e *Engine) runHeartbeat(r *Run, s *kamui.Step) {
+	state, visit := r.State, r.Visits[r.State]
+	fail := func(data map[string]any) {
+		data["state"] = state
+		e.event(r, "heartbeat.failed", data)
+	}
+	k, err := kekkai.Load(e.Home, r.Kekkai)
+	if err != nil {
+		fail(map[string]any{"error": err.Error()})
+		return
+	}
+	dir := filepath.Join(e.runDir(r), state+".heartbeat")
+	os.MkdirAll(dir, 0o700)
+	spec, err := e.scriptSpec(r, s, s.Heartbeat, k, dir)
+	if err != nil {
+		fail(map[string]any{"error": err.Error()})
+		return
+	}
+	// ponytail: fixed 2m cap so a hung status script cannot pile up; make it a heartbeat() arg if one needs longer
+	spec.LogDir, spec.Timeout = "", 2*time.Minute
+	r.Step.beating = true
+	id := r.ID
+	_, err = startProc(spec, "", func(res procResult) {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		r := e.runs[id]
+		if e.closed || r == nil || Terminal(r.Status) || r.State != state || r.Visits[state] != visit || r.Step == nil {
+			return // the step ended meanwhile: its status is stale
+		}
+		r.Step.beating = false
+		if res.TimedOut || res.Exit != 0 || res.Err != nil {
+			fail(map[string]any{"exit": res.Exit, "timed_out": res.TimedOut, "stderr": tail(res.Stderr, 400)})
+			return
+		}
+		if text := strings.TrimSpace(string(res.Stdout)); text != "" {
+			e.event(r, "run.say", map[string]any{"state": state, "text": text, "heartbeat": true})
+		}
+	})
+	if err != nil {
+		r.Step.beating = false
+		fail(map[string]any{"error": err.Error()})
+	}
+}
+
 // Publish delivers a signal to every run waiting on it in the kekkai.
 func (e *Engine) Publish(k, typ, key string, data map[string]any) []string {
 	e.mu.Lock()

@@ -132,6 +132,17 @@ func (v entryValue) Freeze()               {}
 func (v entryValue) Truth() starlark.Bool  { return true }
 func (v entryValue) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable: entry") }
 
+type heartbeatValue struct {
+	cmd   string
+	every time.Duration
+}
+
+func (v heartbeatValue) String() string        { return "<heartbeat " + v.cmd + ">" }
+func (v heartbeatValue) Type() string          { return "heartbeat" }
+func (v heartbeatValue) Freeze()               {}
+func (v heartbeatValue) Truth() starlark.Bool  { return true }
+func (v heartbeatValue) Hash() (uint32, error) { return 0, fmt.Errorf("unhashable: heartbeat") }
+
 type triggerValue struct{ t Trigger }
 
 func (v triggerValue) String() string        { return "<cron " + v.t.Cron + ">" }
@@ -150,16 +161,17 @@ func wfOf(t *starlark.Thread) (*Workflow, error) {
 
 func builtins() starlark.StringDict {
 	b := starlark.StringDict{
-		"workflow": starlark.NewBuiltin("workflow", bWorkflow),
-		"state":    starlark.NewBuiltin("state", bState),
-		"agent":    starlark.NewBuiltin("agent", bAgent),
-		"script":   starlark.NewBuiltin("script", bScript),
-		"wait":     starlark.NewBuiltin("wait", bWait),
-		"spawn":    starlark.NewBuiltin("spawn", bSpawn),
-		"choose":   starlark.NewBuiltin("choose", bChoose),
-		"afk":      starlark.NewBuiltin("afk", bAFK),
-		"entry":    starlark.NewBuiltin("entry", bEntry),
-		"cron":     starlark.NewBuiltin("cron", bCron),
+		"workflow":  starlark.NewBuiltin("workflow", bWorkflow),
+		"state":     starlark.NewBuiltin("state", bState),
+		"agent":     starlark.NewBuiltin("agent", bAgent),
+		"script":    starlark.NewBuiltin("script", bScript),
+		"wait":      starlark.NewBuiltin("wait", bWait),
+		"spawn":     starlark.NewBuiltin("spawn", bSpawn),
+		"choose":    starlark.NewBuiltin("choose", bChoose),
+		"afk":       starlark.NewBuiltin("afk", bAFK),
+		"entry":     starlark.NewBuiltin("entry", bEntry),
+		"cron":      starlark.NewBuiltin("cron", bCron),
+		"heartbeat": starlark.NewBuiltin("heartbeat", bHeartbeat),
 	}
 	for _, k := range []string{KDone, KFail, KCancel} {
 		b[k] = starlark.NewBuiltin(k, bTerminal(k))
@@ -337,11 +349,11 @@ func optStr(v starlark.Value) string {
 func bAgent(t *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kw []starlark.Tuple) (starlark.Value, error) {
 	var worker starlark.Value
 	var instruction string
-	var skills, inputs, cwd, timeout, resume, say starlark.Value
+	var skills, inputs, cwd, timeout, resume, say, hb starlark.Value
 	maxVisits := 0
 	if err := starlark.UnpackArgs("agent", args, kw, "worker", &worker, "instruction", &instruction,
 		"skills?", &skills, "inputs?", &inputs, "cwd?", &cwd, "timeout?", &timeout,
-		"resume?", &resume, "max_visits?", &maxVisits, "say?", &say); err != nil {
+		"resume?", &resume, "max_visits?", &maxVisits, "say?", &say, "heartbeat?", &hb); err != nil {
 		return nil, err
 	}
 	s := &Step{Kind: KAgent, Instruction: instruction, MaxVisits: maxVisits, Cwd: optStr(cwd), Resume: optStr(resume)}
@@ -370,6 +382,9 @@ func bAgent(t *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kw []
 		return nil, fmt.Errorf("agent: resume must be \"aura\" or \"session\"")
 	}
 	if s.Say, err = parseSay("agent", say); err != nil {
+		return nil, err
+	}
+	if err = setHeartbeat("agent", s, hb); err != nil {
 		return nil, err
 	}
 	return stepValue{s}, nil
@@ -404,11 +419,11 @@ func bScript(t *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kw [
 }
 
 func bWait(t *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kw []starlark.Tuple) (starlark.Value, error) {
-	var signal, key, timer, probe, every, timeout, cwd, say starlark.Value
+	var signal, key, timer, probe, every, timeout, cwd, say, hb starlark.Value
 	maxVisits, maxErrors := 0, 0
 	if err := starlark.UnpackArgs("wait", args, kw, "signal?", &signal, "key?", &key, "timer?", &timer,
 		"probe?", &probe, "every?", &every, "timeout?", &timeout, "cwd?", &cwd, "max_visits?", &maxVisits, "say?", &say,
-		"max_errors?", &maxErrors); err != nil {
+		"max_errors?", &maxErrors, "heartbeat?", &hb); err != nil {
 		return nil, err
 	}
 	s := &Step{Kind: KWait, Signal: optStr(signal), Key: optStr(key), Probe: optStr(probe), Cwd: optStr(cwd), MaxVisits: maxVisits,
@@ -440,15 +455,18 @@ func bWait(t *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kw []s
 	if s.Say, err = parseSay("wait", say); err != nil {
 		return nil, err
 	}
+	if err = setHeartbeat("wait", s, hb); err != nil {
+		return nil, err
+	}
 	return stepValue{s}, nil
 }
 
 func bSpawn(t *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kw []starlark.Tuple) (starlark.Value, error) {
 	var workflow string
-	var forEach, input, say starlark.Value
+	var forEach, input, say, hb starlark.Value
 	maxVisits := 0
 	if err := starlark.UnpackArgs("spawn", args, kw, "workflow", &workflow, "for_each", &forEach,
-		"input?", &input, "max_visits?", &maxVisits, "say?", &say); err != nil {
+		"input?", &input, "max_visits?", &maxVisits, "say?", &say, "heartbeat?", &hb); err != nil {
 		return nil, err
 	}
 	s := &Step{Kind: KSpawn, Workflow: workflow, MaxVisits: maxVisits}
@@ -471,7 +489,43 @@ func bSpawn(t *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kw []
 	if s.Say, err = parseSay("spawn", say); err != nil {
 		return nil, err
 	}
+	if err = setHeartbeat("spawn", s, hb); err != nil {
+		return nil, err
+	}
 	return stepValue{s}, nil
+}
+
+// bHeartbeat is heartbeat(cmd, every = "30m"): a script run on a schedule while a
+// long step is in progress.
+func bHeartbeat(t *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kw []starlark.Tuple) (starlark.Value, error) {
+	var cmd string
+	var every starlark.Value
+	if err := starlark.UnpackArgs("heartbeat", args, kw, "cmd", &cmd, "every", &every); err != nil {
+		return nil, err
+	}
+	d, err := dur("heartbeat", "every", every)
+	if err != nil {
+		return nil, err
+	}
+	if d <= 0 {
+		return nil, fmt.Errorf("heartbeat: every must be a positive duration")
+	}
+	if _, err := SplitCommand(cmd); err != nil {
+		return nil, fmt.Errorf("heartbeat: %w", err)
+	}
+	return heartbeatValue{cmd, d}, nil
+}
+
+func setHeartbeat(fn string, s *Step, v starlark.Value) error {
+	if v == nil || v == starlark.None {
+		return nil
+	}
+	h, ok := v.(heartbeatValue)
+	if !ok {
+		return fmt.Errorf("%s: heartbeat must be heartbeat(cmd, every = \"30m\")", fn)
+	}
+	s.Heartbeat, s.HeartbeatEvery = h.cmd, h.every
+	return nil
 }
 
 func bChoose(t *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kw []starlark.Tuple) (starlark.Value, error) {
