@@ -1,6 +1,7 @@
 package state
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -81,4 +82,21 @@ func TestWriteLatency(t *testing.T) {
 	}
 	sort.Slice(lat, func(i, j int) bool { return lat[i] < lat[j] })
 	t.Logf("200 writes: p50 %v  p95 %v  max %v", lat[100], lat[190], lat[199])
+}
+
+// A worker's `pkill -f "<cmd>"` matched memento's argv when the run doc rode in
+// it as plain text; values must not appear verbatim on memento's command line.
+func TestPayloadNotInArgv(t *testing.T) {
+	dir := t.TempDir()
+	bin := dir + "/memento"
+	os.WriteFile(bin, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \""+dir+"/argv\"\necho '{\"ok\":true,\"data\":null}'\n"), 0o755)
+	m := &Memento{NS: "kami", Bin: bin}
+	payload := `pkill -f "sleep 4242"`
+	if err := m.SaveRun("r1", "test", "wf", "running", "", "t0", map[string]any{"cmd": payload}, "kami: run r1"); err != nil {
+		t.Fatal(err)
+	}
+	argv, _ := os.ReadFile(dir + "/argv")
+	if len(argv) == 0 || bytes.Contains(argv, []byte("sleep 4242")) {
+		t.Fatalf("payload in memento argv:\n%s", argv)
+	}
 }

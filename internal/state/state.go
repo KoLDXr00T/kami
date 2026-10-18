@@ -5,11 +5,14 @@ package state
 
 import (
 	"bytes"
+	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // Memento is a client for one memento namespace.
@@ -35,18 +38,26 @@ type Error struct {
 
 func (e *Error) Error() string { return "memento: " + e.Code + ": " + e.Message }
 
+// timeout bounds one memento call; a hung git or store lock surfaces as an error.
+const timeout = time.Minute
+
 func (m *Memento) run(args ...string) (json.RawMessage, error) {
 	bin := m.Bin
 	if bin == "" {
 		bin = "memento"
 	}
-	cmd := exec.Command(bin, append([]string{"--json"}, args...)...)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, append([]string{"--json"}, args...)...)
 	if m.Env != nil {
 		cmd.Env = m.Env
 	}
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	runErr := cmd.Run()
+	if ctx.Err() != nil {
+		return nil, fmt.Errorf("memento %s: timed out after %v", args[0], timeout)
+	}
 	var env envelope
 	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
 		if runErr != nil {
@@ -112,9 +123,12 @@ func (m *Memento) Ensure() error {
 	return m.Exec(schema, "kami: schema")
 }
 
-// Q quotes a string as an SQL literal.
+// Q quotes a string as an SQL literal, hex-encoded. memento db exec takes its
+// SQL only as an argument, so every value lands in memento's argv; in plain
+// text a `pkill -f "<cmd>"` run by a worker matches the run doc that quotes
+// that command and kills memento mid-write.
 func Q(s string) string {
-	return "'" + strings.ReplaceAll(strings.ReplaceAll(s, "\x00", ""), "'", "''") + "'"
+	return "CAST(X'" + hex.EncodeToString([]byte(strings.ReplaceAll(s, "\x00", ""))) + "' AS TEXT)"
 }
 
 func qn(s string) string {
