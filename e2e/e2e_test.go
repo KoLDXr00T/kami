@@ -724,6 +724,21 @@ func TestSessionLoop(t *testing.T) {
 	expect(t, "woken run resumes the old session", v.Vars["resumed_from"], "sess-1")
 }
 
+// worker.exited carries what claude's JSON result says the attempt cost
+func TestWorkerCost(t *testing.T) {
+	e := newEnv(t)
+	id := e.start_("chat-loop", "--input", "thread=t1", "--input", "text=hi")
+	v := e.waitRun(id, short, "first answer", func(v runView) bool { return v.State == "listen" })
+	for _, ev := range v.Events {
+		if ev["type"] == "worker.exited" {
+			d := ev["data"].(map[string]any)
+			expect(t, "cost", fmt.Sprint(d["session_cost_usd"], " ", d["output_tokens"], " ", d["duration_ms"], " ", d["session"]), "0.25 7 1200 sess-1")
+			return
+		}
+	}
+	t.Fatalf("no worker.exited; events: %s", eventTypes(v))
+}
+
 // --- say= milestones ------------------------------------------------------------------
 
 func TestSay(t *testing.T) {

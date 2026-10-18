@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -619,6 +620,30 @@ func sessionID(provider string, stdout []byte) string {
 	return ""
 }
 
+// workerUsage is what claude's JSON result says the attempt cost. Its total_cost_usd counts
+// the whole session, so a resumed session reports a running total (session_cost_usd: take
+// the last one per session); tokens and duration are this attempt's. Codex reports no cost.
+func workerUsage(provider string, stdout []byte) map[string]any {
+	if provider != "claude" && provider != "" && provider != "fake" {
+		return nil
+	}
+	var v struct {
+		Cost     *float64 `json:"total_cost_usd"`
+		Duration int64    `json:"duration_ms"`
+		Usage    struct {
+			Input      int64 `json:"input_tokens"`
+			Output     int64 `json:"output_tokens"`
+			CacheRead  int64 `json:"cache_read_input_tokens"`
+			CacheWrite int64 `json:"cache_creation_input_tokens"`
+		} `json:"usage"`
+	}
+	if json.Unmarshal(bytes.TrimSpace(stdout), &v) != nil || v.Cost == nil {
+		return nil
+	}
+	return map[string]any{"session_cost_usd": *v.Cost, "duration_ms": v.Duration, "input_tokens": v.Usage.Input,
+		"output_tokens": v.Usage.Output, "cache_read_tokens": v.Usage.CacheRead, "cache_write_tokens": v.Usage.CacheWrite}
+}
+
 func (e *Engine) agentExited(runID, tok string, res procResult) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -637,8 +662,13 @@ func (e *Engine) agentExited(runID, tok string, res procResult) {
 		}
 		r.Sessions[r.State] = r.Step.Provider + ":" + sid
 	}
-	e.event(r, "worker.exited", map[string]any{"state": r.State, "attempt": r.Step.Attempt, "exit": res.Exit,
-		"timed_out": res.TimedOut, "stderr": tail(res.Stderr, 400)})
+	ev := map[string]any{"state": r.State, "attempt": r.Step.Attempt, "exit": res.Exit,
+		"timed_out": res.TimedOut, "stderr": tail(res.Stderr, 400)}
+	if u := workerUsage(r.Step.Provider, res.Stdout); u != nil {
+		maps.Copy(ev, u)
+		ev["session"] = r.Step.Session
+	}
+	e.event(r, "worker.exited", ev)
 	r.Step.Token = ""
 	if p := r.Step.Pending; p != nil {
 		r.Step.Pending = nil
