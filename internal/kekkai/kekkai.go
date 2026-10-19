@@ -210,6 +210,21 @@ func (k *Kekkai) WorkerEnv(extra map[string]string) []string {
 	for key, v := range extra {
 		m[key] = v
 	}
+	// the kekkai's PATH (its tools: nvm node, pnpm bins) goes after the engine's,
+	// so it adds tools without shadowing $KAMI_HOME/bin or the daemon's; relative
+	// and empty entries are dropped
+	if p, ok := k.Env["PATH"]; ok {
+		dirs := filepath.SplitList(extra["PATH"])
+		if extra["PATH"] == "" {
+			dirs = filepath.SplitList(os.Getenv("PATH"))
+		}
+		for _, d := range filepath.SplitList(p) {
+			if filepath.IsAbs(d) {
+				dirs = append(dirs, d)
+			}
+		}
+		m["PATH"] = strings.Join(dirs, string(os.PathListSeparator))
+	}
 	out := make([]string, 0, len(m))
 	for key, v := range m {
 		out = append(out, key+"="+v)

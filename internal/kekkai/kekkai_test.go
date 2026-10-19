@@ -16,7 +16,7 @@ func TestLoadEnvAndCwd(t *testing.T) {
 		os.MkdirAll(d, 0o755)
 	}
 	os.WriteFile(filepath.Join(dir, "kekkai.yaml"), []byte("name: k\nenv_file: env\ncwd_roots: ["+root+"]\n"), 0o600)
-	os.WriteFile(filepath.Join(dir, "env"), []byte("# c\nA=1\nexport B=\"two words\"\nC='x=y'\n"), 0o600)
+	os.WriteFile(filepath.Join(dir, "env"), []byte("# c\nA=1\nexport B=\"two words\"\nC='x=y'\nPATH=/tools::rel\n"), 0o600)
 	os.Symlink(outside, filepath.Join(root, "escape"))
 
 	k, err := Load(home, "k")
@@ -37,6 +37,9 @@ func TestLoadEnvAndCwd(t *testing.T) {
 	env := strings.Join(k.WorkerEnv(map[string]string{"X": "y"}), "\n")
 	if !strings.Contains(env, "A=1") || !strings.Contains(env, "X=y") {
 		t.Fatalf("worker env = %s", env)
+	}
+	if env := strings.Join(k.WorkerEnv(map[string]string{"PATH": "/engine"}), "\n"); !strings.Contains(env, "PATH=/engine:/tools\n") {
+		t.Fatalf("kekkai PATH not after the engine PATH: %s", env)
 	}
 	t.Setenv("LEAKY_SECRET", "z")
 	if strings.Contains(strings.Join(k.WorkerEnv(nil), "\n"), "LEAKY_SECRET") {
