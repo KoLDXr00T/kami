@@ -1071,6 +1071,16 @@ func TestSystemInstruction(t *testing.T) {
 	e.refused(5, "only the owner", "system", id, "go", "--state", "shipped")
 	e.must("contract", "resolve", lock.ID, "ship")
 	e.waitStatus(id, "done", short)
+
+	// a jump cannot skip a gate on the way; it can arrive at one, and the gate then holds
+	id = e.start_("system-jump")
+	e.waitStatus(id, "waiting", short)
+	e.refused(5, "human-only", "system", id, "skip it", "--state", "shipped")
+	e.must("system", id, "to the gate", "--state", "ship_it")
+	lock = e.openContract(id, short)
+	e.refused(5, "only the owner", "system", id, "go", "--state", "shipped")
+	e.must("contract", "resolve", lock.ID, "ship")
+	expect(t, "gated report", e.waitStatus(id, "done", short).Report, "shipped")
 }
 
 func TestWorkerCannotSendSystem(t *testing.T) {

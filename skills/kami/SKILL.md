@@ -109,8 +109,9 @@ kami system <run> "<why>" --answer retry                 # answer its open contr
 
 Every one is logged: a `system.instruction` event plus a `run.say` line in the
 run's thread. Nothing else about the run changes. Workers cannot send one, and a
-run holding a locked contract (a gate, an action, `lock=True`) refuses it: those
-stay the owner's. A note to a run that is mid-step is logged only.
+run holding a locked contract (a gate, an action, `lock=True`) refuses it, and
+`--state` refuses a state the run could only reach through one: those stay the
+owner's. A note to a run that is mid-step is logged only.
 
 ## Memory
 

@@ -13,7 +13,8 @@ const BySystem = "system"
 // nobody pressing anything. With answer it answers the open contract; with state or vars it
 // moves onto the latest workflow (as Upgrade); with neither it runs a waiting probe now. Text
 // is the reason, kept as a system.instruction event and a run.say in the run's thread.
-// A locked contract stays the owner's: answering it, or the upgrade that would cancel it, is refused.
+// A locked contract stays the owner's: answering it, or the upgrade that would cancel it, is refused,
+// and so is a state only reachable by passing through a human-only step.
 func (e *Engine) System(id, text, state, answer string, vars map[string]any) (*Run, error) {
 	if strings.TrimSpace(text) == "" {
 		return nil, uerr("INVALID", "a system instruction needs its text: it is the log")
@@ -49,6 +50,15 @@ func (e *Engine) System(id, text, state, answer string, vars map[string]any) (*R
 		}
 		err = e.resolve(open, Resolution{Answer: answer, Note: text, By: BySystem})
 	case state != "" || len(vars) > 0:
+		if state != "" {
+			_, w, lerr := LoadWorkflow(e.Home, r.Kekkai, r.Workflow)
+			if lerr != nil {
+				return nil, lerr
+			}
+			if w.States[state] != nil && !w.ReachableWithoutHuman(r.State, state) {
+				return nil, uerr("FORBIDDEN", "run %s cannot get from %s to %s without a human-only step: only the owner can move it", r.ID, r.State, state)
+			}
+		}
 		err = e.upgrade(r, state, vars)
 	case r.Step != nil && r.Step.Kind == kamui.KWait && r.Step.Phase == "waiting" && !r.Step.probing && e.def(r).States[r.State].Step.Probe != "":
 		t := now()

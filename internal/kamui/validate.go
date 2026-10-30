@@ -282,3 +282,35 @@ func ChooseTargets(w *Workflow, fn starlark.Callable) (targets []string, complet
 	}
 	return targets, complete
 }
+
+// ReachableWithoutHuman reports whether a run in from can get to to on its own: following
+// outcomes and choose functions, it may arrive at a human-only state but not pass through one.
+func (w *Workflow) ReachableWithoutHuman(from, to string) bool {
+	seen := map[string]bool{}
+	var walk func(string) bool
+	walk = func(s string) bool {
+		if s == to {
+			return true
+		}
+		st := w.States[s]
+		if seen[s] || st == nil || st.Step.HumanOnly() {
+			return false
+		}
+		seen[s] = true
+		for _, n := range st.Outcomes {
+			if walk(n) {
+				return true
+			}
+		}
+		if st.Step.Kind == KChoose {
+			targets, _ := ChooseTargets(w, st.Step.Fn)
+			for _, n := range targets {
+				if walk(n) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	return walk(from)
+}
