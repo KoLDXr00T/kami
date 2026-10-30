@@ -5,13 +5,18 @@
 package e2e
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -1016,4 +1021,119 @@ func TestPause(t *testing.T) {
 	time.Sleep(800 * time.Millisecond)
 	expect(t, "timer still has its 1.5s left", e.show(id).Status, "waiting")
 	e.waitStatus(id, "done", short)
+}
+
+// --- system instructions and SSE -------------------------------------------------------
+
+func sayText(v runView, want string) bool {
+	for _, ev := range v.Events {
+		if d, _ := ev["data"].(map[string]any); ev["type"] == "run.say" && d["text"] == want {
+			return true
+		}
+	}
+	return false
+}
+
+func TestSystemInstruction(t *testing.T) {
+	e := newEnv(t)
+
+	// no state: the waiting probe runs now, an hour early
+	id := e.start_("system-wait")
+	e.waitStatus(id, "waiting", short)
+	e.waitRun(id, short, "first probe", func(v runView) bool { return hasEvent(v, "wait.armed") })
+	time.Sleep(time.Second) // the first pending has landed
+	e.refused(4, "text", "system", id, " ")
+	e.must("system", id, "wake up")
+	v := e.waitStatus(id, "done", short)
+	expect(t, "woken report", v.Report, "woke")
+	if !hasEvent(v, "system.instruction") || !sayText(v, "🛠 system: wake up") {
+		t.Fatalf("not logged; events: %s", eventTypes(v))
+	}
+
+	// state and vars: the run continues from there
+	id = e.start_("system-wait")
+	e.waitStatus(id, "waiting", short)
+	e.must("system", id, "move on", "--state", "other", "--vars", `{"note": "x"}`)
+	expect(t, "moved report", e.waitStatus(id, "done", short).Report, "moved x")
+
+	// an open contract is answered, as system
+	id = e.start_("gate")
+	e.openContract(id, short)
+	e.refused(4, "not one of", "system", id, "maybe", "--answer", "maybe")
+	e.must("system", id, "go", "--answer", "ship")
+	v = e.waitStatus(id, "done", short)
+	expect(t, "answered report", v.Report, "shipped")
+
+	// a locked contract stays the owner's, whichever way the instruction comes
+	id = e.start_("system-lock")
+	lock := e.openContract(id, short)
+	e.refused(5, "only the owner", "system", id, "go", "--answer", "ship")
+	e.refused(5, "only the owner", "system", id, "go", "--state", "shipped")
+	e.must("contract", "resolve", lock.ID, "ship")
+	e.waitStatus(id, "done", short)
+}
+
+func TestWorkerCannotSendSystem(t *testing.T) {
+	e := newEnv(t)
+	id := e.start_("system-wait")
+	e.waitStatus(id, "waiting", short)
+	e.vars = append(e.vars, "KAMI_TOKEN=worker")
+	if _, code, msg := e.kami("system", id, "from a worker"); code == 0 || !strings.Contains(msg, "workers cannot") {
+		t.Fatalf("worker sent a system instruction: code %d, %q", code, msg)
+	}
+}
+
+func TestEventsSSE(t *testing.T) {
+	e := newEnv(t)
+	id := e.start_("gate")
+	c := e.openContract(id, short)
+	sock := filepath.Join(e.home, "kami.sock")
+	client := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "unix", sock)
+	}}}
+	ctx, cancel := context.WithTimeout(context.Background(), short)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, "GET", "http://kami/events?run="+id, nil)
+	req.Header.Set("Accept", "text/event-stream")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	expect(t, "content type", resp.Header.Get("Content-Type"), "text/event-stream")
+	sc := bufio.NewScanner(resp.Body)
+	sc.Buffer(make([]byte, 1<<20), 1<<24)
+	lastID, resolved := "", false
+	for sc.Scan() && !resolved {
+		line := sc.Text()
+		if v, ok := strings.CutPrefix(line, "id: "); ok {
+			lastID = v
+		}
+		if line == "event: contract.opened" { // the backlog is there: what follows arrives live
+			e.must("contract", "resolve", c.ID, "ship")
+		}
+		resolved = line == "event: contract.resolved"
+	}
+	if !resolved || lastID == "" {
+		t.Fatalf("stream ended before contract.resolved (last id %q): %v", lastID, sc.Err())
+	}
+
+	// Last-Event-ID replays only what came after it
+	req, _ = http.NewRequestWithContext(ctx, "GET", "http://kami/events?run="+id, nil)
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Last-Event-ID", lastID)
+	resp2, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	sc = bufio.NewScanner(resp2.Body)
+	if sc.Scan() {
+		got, _ := strings.CutPrefix(sc.Text(), "id: ")
+		first, err1 := strconv.ParseInt(got, 10, 64)
+		after, err2 := strconv.ParseInt(lastID, 10, 64)
+		if err1 != nil || err2 != nil || first <= after {
+			t.Fatalf("after Last-Event-ID %s the first line is %q", lastID, sc.Text())
+		}
+	}
 }

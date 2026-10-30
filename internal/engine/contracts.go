@@ -291,7 +291,7 @@ func (e *Engine) resolve(c *Contract, res Resolution) error {
 	res.At = now()
 	c.Status, c.Resolution, c.Deadline = "resolved", &res, nil
 	e.stopTimer("contract:" + c.ID)
-	if p := e.resolvers[c.ID]; p != nil && res.By == "human" {
+	if p := e.resolvers[c.ID]; p != nil && (res.By == "human" || res.By == BySystem) {
 		p.kill()
 	}
 	e.saveContract(c, "resolved by "+res.By)

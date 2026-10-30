@@ -94,7 +94,23 @@ kami events tail -f [--type contract.] [--run <id>]   # NDJSON with --json
 ```
 
 `kami events tail -f --json` is the stream future adapters (jane, phoenix,
-Slack) consume.
+Slack) consume. `GET /events` with `Accept: text/event-stream` is the same log
+as SSE: `id` is the event id, `event` its type, `data` the JSON, and
+`Last-Event-ID` resumes after a reconnect.
+
+## System instructions
+
+```sh
+kami system <run> "<why, for the log>"                   # wake: probe now
+kami system <run> "<why>" --vars '{"k": "v"}'            # new vars, same state, latest workflow
+kami system <run> "<why>" --state review                 # continue from another state
+kami system <run> "<why>" --answer retry                 # answer its open contract
+```
+
+Every one is logged: a `system.instruction` event plus a `run.say` line in the
+run's thread. Nothing else about the run changes. Workers cannot send one, and a
+run holding a locked contract (a gate, an action, `lock=True`) refuses it: those
+stay the owner's. A note to a run that is mid-step is logged only.
 
 ## Memory
 

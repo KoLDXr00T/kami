@@ -524,26 +524,30 @@ func (e *Engine) Upgrade(id, state string, vars map[string]any) (*Run, error) {
 	if err != nil {
 		return nil, err
 	}
+	return r, e.upgrade(r, state, vars)
+}
+
+func (e *Engine) upgrade(r *Run, state string, vars map[string]any) error {
 	if Terminal(r.Status) {
-		return nil, uerr("CONFLICT", "run %s is already %s", r.ID, r.Status)
+		return uerr("CONFLICT", "run %s is already %s", r.ID, r.Status)
 	}
 	if e.procs[r.ID] != nil || (r.Step != nil && (r.Step.probing || r.Step.Kind == kamui.KSpawn ||
 		(r.Step.Kind == kamui.KAgent && r.Step.Phase != "done"))) {
-		return nil, uerr("CONFLICT", "run %s is busy in %s: upgrade it while it waits", r.ID, r.State)
+		return uerr("CONFLICT", "run %s is busy in %s: upgrade it while it waits", r.ID, r.State)
 	}
 	_, w, err := LoadWorkflow(e.Home, r.Kekkai, r.Workflow)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if state == "" {
 		state = r.State
 	}
 	if w.States[state] == nil {
-		return nil, uerr("INVALID", "the current %s has no state %q", r.Workflow, state)
+		return uerr("INVALID", "the current %s has no state %q", r.Workflow, state)
 	}
 	if _, ok := e.defs[w.Hash]; !ok {
 		if err := e.Mem.SaveDef(w.Hash, r.Kekkai, r.Workflow, w.Entry, w.Files); err != nil {
-			return nil, fmt.Errorf("pin workflow: %w", err)
+			return fmt.Errorf("pin workflow: %w", err)
 		}
 		e.defs[w.Hash] = w
 	}
@@ -561,7 +565,7 @@ func (e *Engine) Upgrade(id, state string, vars map[string]any) (*Run, error) {
 		keep = r.Step.Contract
 	}
 	e.cancelContracts(r, "run upgraded", keep)
-	return r, nil
+	return nil
 }
 
 // block parks the run on an engine contract (loop budget, a step that cannot

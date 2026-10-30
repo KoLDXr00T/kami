@@ -162,6 +162,23 @@ func (e *Engine) Handler() http.Handler {
 		reply(w, e.view(run), err)
 	})
 
+	m.HandleFunc("POST /runs/{id}/system", func(w http.ResponseWriter, r *http.Request) {
+		if err := workerOnly(r); err != nil {
+			reply(w, nil, err)
+			return
+		}
+		var req struct {
+			Text, State, Answer string
+			Vars                map[string]any
+		}
+		if err := decode(r, &req); err != nil {
+			reply(w, nil, err)
+			return
+		}
+		run, err := e.System(r.PathValue("id"), req.Text, req.State, req.Answer, normMap(req.Vars))
+		reply(w, e.view(run), err)
+	})
+
 	m.HandleFunc("POST /signal", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Kekkai, Type, Key string
@@ -339,25 +356,50 @@ func (e *Engine) handleEvents(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	since, _ := strconv.ParseInt(q.Get("since"), 10, 64)
 	f := eventbus.Filter{Kekkai: q.Get("kekkai"), Run: q.Get("run"), Type: q.Get("type")}
-	follow := q.Get("follow") == "1"
+	// SSE when asked for: always a stream, and a reconnect resumes from Last-Event-ID.
+	sse := strings.Contains(r.Header.Get("Accept"), "text/event-stream")
+	if id, err := strconv.ParseInt(r.Header.Get("Last-Event-ID"), 10, 64); sse && err == nil {
+		since = id
+	}
+	follow := sse || q.Get("follow") == "1"
 	var ch <-chan eventbus.Event
 	if follow {
 		var cancel func()
 		ch, cancel = e.Bus.Subscribe(f)
 		defer cancel()
 	}
-	w.Header().Set("Content-Type", "application/x-ndjson")
 	enc := json.NewEncoder(w)
+	send := enc.Encode
+	keepalive := "\n" // readers skip blank lines
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	if sse {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		keepalive = ": ping\n\n"
+		send = func(v any) error {
+			raw, err := json.Marshal(v)
+			if err != nil {
+				return err
+			}
+			name := "error"
+			id := ""
+			if ev, ok := v.(eventbus.Event); ok {
+				name, id = ev.Type, fmt.Sprintf("id: %d\n", ev.ID)
+			}
+			_, err = fmt.Fprintf(w, "%sevent: %s\ndata: %s\n\n", id, name, raw)
+			return err
+		}
+	}
 	fl, _ := w.(http.Flusher)
 	last := since
 	for {
 		batch, err := e.Bus.Since(last, f, 1000)
 		if err != nil {
-			enc.Encode(map[string]any{"error": err.Error()})
+			send(map[string]any{"error": err.Error()})
 			return
 		}
 		for _, ev := range batch {
-			enc.Encode(ev)
+			send(ev)
 			last = ev.ID
 		}
 		if len(batch) < 1000 {
@@ -383,7 +425,7 @@ func (e *Engine) handleEvents(w http.ResponseWriter, r *http.Request) {
 			if ev.ID != 0 && ev.ID <= last {
 				continue
 			}
-			if err := enc.Encode(ev); err != nil {
+			if err := send(ev); err != nil {
 				return
 			}
 			last = ev.ID
@@ -391,8 +433,8 @@ func (e *Engine) handleEvents(w http.ResponseWriter, r *http.Request) {
 				fl.Flush()
 			}
 		case <-ping.C:
-			// keeps idle connections from being reaped; readers skip blank lines
-			w.Write([]byte("\n"))
+			// keeps idle connections from being reaped
+			w.Write([]byte(keepalive))
 			if fl != nil {
 				fl.Flush()
 			}

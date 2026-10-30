@@ -107,6 +107,7 @@ const usage = `kami — the Kami agent OS
   kami run list [--status S|active] [--kekkai K] [--var k=v]...
   kami run show <id> | cancel <id> | upgrade <id> [--state S] [--vars JSON]
 
+  kami system <run> <text> [--state S] [--vars JSON] [--answer A]
   kami signal pub <type> [--key K] [--data JSON] [--kekkai K]
 
   kami contract list [--status open|resolved|all] [--kekkai K] [--run R]
@@ -152,6 +153,8 @@ func run(args []string) error {
 		return cmdWorkflow(sub, tailArgs(rest))
 	case "run":
 		return cmdRun(sub, tailArgs(rest))
+	case "system":
+		return cmdSystem(args[1:])
 	case "signal":
 		if sub != "pub" {
 			return fail("USAGE", "usage: kami signal pub <type> [--key K] [--data JSON] [--kekkai K]")
@@ -634,6 +637,37 @@ func eventLine(ev map[string]any, withRun bool) string {
 }
 
 // --- signals -------------------------------------------------------------------------------
+
+// cmdSystem sends a logged instruction to a run: see Engine.System.
+func cmdSystem(args []string) error {
+	usage := fail("USAGE", "usage: kami system <run> <text> [--state S] [--vars JSON] [--answer A]")
+	if len(args) < 2 || len(args)%2 != 0 {
+		return usage
+	}
+	body := map[string]any{"text": args[1]}
+	for i := 2; i < len(args); i += 2 {
+		switch args[i] {
+		case "--state":
+			body["state"] = args[i+1]
+		case "--answer":
+			body["answer"] = args[i+1]
+		case "--vars":
+			var vars map[string]any
+			if err := json.Unmarshal([]byte(args[i+1]), &vars); err != nil {
+				return fail("USAGE", "--vars: %v", err)
+			}
+			body["vars"] = vars
+		default:
+			return usage
+		}
+	}
+	var r engine.Run
+	data, err := call("POST", "/runs/"+url.PathEscape(args[0])+"/system", body, &r)
+	if err != nil {
+		return err
+	}
+	return emit(data, func() { fmt.Printf("system → %s (%s, %s)\n", r.ID, r.State, r.Status) })
+}
 
 func cmdSignal(args []string) error {
 	f, err := parse(args, map[string]bool{"key": true, "data": true, "kekkai": true}, map[string]string{"k": "kekkai"})
